@@ -1,0 +1,43 @@
+name: Daily Containers Report
+
+on:
+  schedule:
+    # 8:30 Israel time (6:30 UTC in winter, 5:30 UTC in summer)
+    # Running at 5:30 UTC to cover summer time
+    # Only Sunday-Friday (0-5), excluding Saturday (6)
+    - cron: '30 5 * * 0-5'
+
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests openpyxl
+
+      - name: Generate and send report
+        env:
+          PRIORITY_API_HOST: ${{ secrets.PRIORITY_API_HOST }}
+          PRIORITY_API_TOKEN: ${{ secrets.PRIORITY_API_TOKEN }}
+          PRIORITY_API_PASSWORD: ${{ secrets.PRIORITY_API_PASSWORD }}
+          TIMELINES_API_KEY: ${{ secrets.TIMELINES_API_KEY }}
+        run: |
+          python scripts/send_containers_report.py
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: containers-report-${{ github.run_id }}
+          path: "*.xlsx"
+          retention-days: 30
