@@ -220,7 +220,7 @@ def upload_to_timelineai(filepath):
 
     response.raise_for_status()
     data = response.json()
-    return data["uid"]
+    return data["data"]["uid"]
 
 
 def send_whatsapp(file_uid, doc_count, total_price, total_pallets):
