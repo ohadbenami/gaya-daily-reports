@@ -28,9 +28,7 @@ jobs:
 
       - name: Generate and send report
         env:
-          PRIORITY_API_HOST: ${{ secrets.PRIORITY_API_HOST }}
-          PRIORITY_API_TOKEN: ${{ secrets.PRIORITY_API_TOKEN }}
-          PRIORITY_API_PASSWORD: ${{ secrets.PRIORITY_API_PASSWORD }}
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           TIMELINES_API_KEY: ${{ secrets.TIMELINES_API_KEY }}
         run: |
           python scripts/send_containers_report.py
