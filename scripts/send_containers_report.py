@@ -205,31 +205,46 @@ def fetch_containers_from_priority():
 
 
 def fetch_items_from_priority(po_number):
-    """Fetch items for a PO from Priority PORDERITEMS_SUBFORM"""
+    """Fetch items for a PO from Priority PORDERITEMS_SUBFORM, with discount applied"""
     params = {
         '$filter': f"ORDNAME eq '{po_number}'",
-        '$select': 'ORDNAME,CDES',
+        '$select': 'ORDNAME,CDES,QPRICE',
         '$expand': 'PORDERITEMS_SUBFORM($select=PARTNAME,PDES,TQUANT,PRICE,QPRICE)'
     }
     data = priority_query('PORDERS', params)
-    
+
     if not data:
         return []
-    
+
     items = []
     for order in data:
-        for item in order.get('PORDERITEMS_SUBFORM', []):
+        all_lines = order.get('PORDERITEMS_SUBFORM', [])
+
+        # Calculate total discount from negative lines (like TUD001)
+        gross_total = sum(line.get('QPRICE', 0) for line in all_lines if line.get('QPRICE', 0) > 0)
+        total_discount = sum(line.get('QPRICE', 0) for line in all_lines if line.get('QPRICE', 0) < 0)
+
+        # Calculate discount percentage
+        discount_pct = abs(total_discount) / gross_total if gross_total > 0 else 0
+
+        # Process only product lines (positive quantity)
+        for item in all_lines:
             qty = item.get('TQUANT', 0)
             if qty <= 0:
                 continue
+
+            # Apply discount to unit price
+            list_price = item.get('PRICE', 0)
+            net_price = list_price * (1 - discount_pct)
+
             items.append({
                 'sku': item.get('PARTNAME', ''),
                 'description': item.get('PDES', ''),
                 'quantity': int(qty),
                 'unit': 'קרט',
-                'unit_price': item.get('PRICE', 0)
+                'unit_price': round(net_price, 2)  # Net price after discount
             })
-    
+
     return items
 
 
