@@ -35,6 +35,7 @@ PORT_COST_ILS = 1107
 RECIPIENTS = [
     {'name': 'אוהד', 'phone': '972528012869'},
     {'name': 'קיריל', 'phone': '972538470070'},
+    {'name': 'יובל', 'phone': '972505267110'},
 ]
 
 # Styles
