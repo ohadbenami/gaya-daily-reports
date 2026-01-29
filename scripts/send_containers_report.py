@@ -10,6 +10,7 @@ Daily Containers Report - Gaya Foods (Enhanced Version)
 import os
 import requests
 import json
+import time
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -83,20 +84,38 @@ def monday_query(query):
         return None
 
 
-def priority_query(table, params):
-    """Execute Priority OData query"""
+def priority_query(table, params, retries=3):
+    """Execute Priority OData query with retry logic"""
     url = f"{PRIORITY_API_HOST}/{table}"
-    response = requests.get(
-        url,
-        params=params,
-        auth=(PRIORITY_API_TOKEN, PRIORITY_API_PASSWORD),
-        headers={'Content-Type': 'application/json'}
-    )
-    if response.status_code == 200:
-        return response.json().get('value', [])
-    else:
-        print(f"Priority API error: {response.status_code} - {response.text}")
-        return []
+
+    for attempt in range(retries):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                auth=(PRIORITY_API_TOKEN, PRIORITY_API_PASSWORD),
+                headers={'Content-Type': 'application/json'},
+                timeout=60
+            )
+            if response.status_code == 200:
+                return response.json().get('value', [])
+            elif response.status_code in [502, 503, 504]:
+                print(f"Priority API error {response.status_code}, retry {attempt + 1}/{retries}...")
+                time.sleep(5 * (attempt + 1))  # Exponential backoff
+                continue
+            else:
+                print(f"Priority API error: {response.status_code} - {response.text}")
+                return []
+        except requests.exceptions.Timeout:
+            print(f"Priority API timeout, retry {attempt + 1}/{retries}...")
+            time.sleep(5 * (attempt + 1))
+            continue
+        except Exception as e:
+            print(f"Priority API error: {e}")
+            return []
+
+    print("Priority API failed after all retries")
+    return []
 
 
 def fetch_usd_rate():
