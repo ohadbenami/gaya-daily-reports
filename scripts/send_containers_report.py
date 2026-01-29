@@ -245,49 +245,64 @@ def calculate_days_in_port(eta_str):
 
 
 def create_summary_sheet(ws, containers, usd_rate):
-    """Create summary dashboard sheet"""
+    """Create summary dashboard sheet with separation between port and on-ship containers"""
     ws.sheet_view.rightToLeft = True
-    
-    widths = [3, 15, 18, 25, 12, 15, 12, 15]
+
+    widths = [3, 15, 18, 20, 14, 14, 12, 15]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    
+
+    # Split containers by status
+    at_port = [c for c in containers if c['status'] == 'כנ"מ ללא BL']
+    on_ship = [c for c in containers if c['status'] == 'באוניה']
+
+    # Sort: at_port by days (descending), on_ship by ETA (ascending)
+    at_port = sorted(at_port, key=lambda x: calculate_days_in_port(x['eta']), reverse=True)
+    on_ship = sorted(on_ship, key=lambda x: x['eta'] or '9999')
+
+    at_port_fob = sum(c['fob_total'] for c in at_port)
+    on_ship_fob = sum(c['fob_total'] for c in on_ship)
+    critical_count = sum(1 for c in at_port if calculate_days_in_port(c['eta']) > 30)
+
     # Title
     ws.merge_cells('B2:H2')
-    ws['B2'] = f"🚢 דוח מכולות בכנ\"מ - Gaya Foods"
+    ws['B2'] = f"🚢 דוח מכולות Ardo - Gaya Foods"
     ws['B2'].font = TITLE_FONT
     ws['B2'].alignment = Alignment(horizontal='center')
-    
+
     ws.merge_cells('B3:H3')
     ws['B3'] = f"📅 {datetime.now().strftime('%d.%m.%Y')} | 💵 שער: {usd_rate}"
     ws['B3'].font = Font(size=12, color="7F8C8D")
     ws['B3'].alignment = Alignment(horizontal='center')
-    
-    # KPIs
-    total_fob = sum(c['fob_total'] for c in containers)
-    critical_count = sum(1 for c in containers if calculate_days_in_port(c['eta']) > 30)
-    
+
+    # === KPIs Row 1: Port Containers ===
     row = 5
+    PORT_FILL = PatternFill(start_color="FADBD8", end_color="FADBD8", fill_type="solid")
+    SHIP_FILL = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")
+
+    # At Port count
     ws.merge_cells(f'B{row}:C{row+1}')
-    ws[f'B{row}'] = str(len(containers))
-    ws[f'B{row}'].font = BIG_NUMBER
-    ws[f'B{row}'].fill = LIGHT_BLUE
+    ws[f'B{row}'] = str(len(at_port))
+    ws[f'B{row}'].font = Font(name='Arial', size=28, bold=True, color="C0392B")
+    ws[f'B{row}'].fill = PORT_FILL
     ws[f'B{row}'].alignment = Alignment(horizontal='center', vertical='center')
     ws.merge_cells(f'B{row+2}:C{row+2}')
-    ws[f'B{row+2}'] = "סה\"כ מכולות"
+    ws[f'B{row+2}'] = "⚓ בנמל"
     ws[f'B{row+2}'].font = LABEL_FONT
     ws[f'B{row+2}'].alignment = Alignment(horizontal='center')
-    
+
+    # At Port FOB
     ws.merge_cells(f'D{row}:E{row+1}')
-    ws[f'D{row}'] = f"${total_fob/1000:.0f}K"
-    ws[f'D{row}'].font = BIG_NUMBER
-    ws[f'D{row}'].fill = LIGHT_BLUE
+    ws[f'D{row}'] = f"${at_port_fob/1000:.0f}K"
+    ws[f'D{row}'].font = Font(name='Arial', size=28, bold=True, color="C0392B")
+    ws[f'D{row}'].fill = PORT_FILL
     ws[f'D{row}'].alignment = Alignment(horizontal='center', vertical='center')
     ws.merge_cells(f'D{row+2}:E{row+2}')
-    ws[f'D{row+2}'] = "FOB כולל"
+    ws[f'D{row+2}'] = "FOB בנמל"
     ws[f'D{row+2}'].font = LABEL_FONT
     ws[f'D{row+2}'].alignment = Alignment(horizontal='center')
-    
+
+    # Critical count
     ws.merge_cells(f'F{row}:G{row+1}')
     ws[f'F{row}'] = f"{critical_count} 🔴"
     ws[f'F{row}'].font = Font(name='Arial', size=28, bold=True, color="C0392B")
@@ -297,47 +312,136 @@ def create_summary_sheet(ws, containers, usd_rate):
     ws[f'F{row+2}'] = "קריטי (>30 יום)"
     ws[f'F{row+2}'].font = LABEL_FONT
     ws[f'F{row+2}'].alignment = Alignment(horizontal='center')
-    
-    # Table
-    row = 10
-    headers = ["#", "הזמנה", "מכולה", "ספק", "ETA", "FOB $", "ימים", "גיליון"]
-    for col, header in enumerate(headers, 2):
+
+    # === KPIs Row 2: On Ship ===
+    row = 9
+    # On Ship count
+    ws.merge_cells(f'B{row}:C{row+1}')
+    ws[f'B{row}'] = str(len(on_ship))
+    ws[f'B{row}'].font = Font(name='Arial', size=28, bold=True, color="27AE60")
+    ws[f'B{row}'].fill = SHIP_FILL
+    ws[f'B{row}'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.merge_cells(f'B{row+2}:C{row+2}')
+    ws[f'B{row+2}'] = "🚢 באוניה"
+    ws[f'B{row+2}'].font = LABEL_FONT
+    ws[f'B{row+2}'].alignment = Alignment(horizontal='center')
+
+    # On Ship FOB
+    ws.merge_cells(f'D{row}:E{row+1}')
+    ws[f'D{row}'] = f"${on_ship_fob/1000:.0f}K"
+    ws[f'D{row}'].font = Font(name='Arial', size=28, bold=True, color="27AE60")
+    ws[f'D{row}'].fill = SHIP_FILL
+    ws[f'D{row}'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.merge_cells(f'D{row+2}:E{row+2}')
+    ws[f'D{row+2}'] = "FOB באוניה"
+    ws[f'D{row+2}'].font = LABEL_FONT
+    ws[f'D{row+2}'].alignment = Alignment(horizontal='center')
+
+    # Total containers
+    ws.merge_cells(f'F{row}:G{row+1}')
+    ws[f'F{row}'] = str(len(containers))
+    ws[f'F{row}'].font = BIG_NUMBER
+    ws[f'F{row}'].fill = LIGHT_BLUE
+    ws[f'F{row}'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.merge_cells(f'F{row+2}:G{row+2}')
+    ws[f'F{row+2}'] = "סה\"כ מכולות"
+    ws[f'F{row+2}'].font = LABEL_FONT
+    ws[f'F{row+2}'].alignment = Alignment(horizontal='center')
+
+    # ========== TABLE 1: AT PORT (בנמל) ==========
+    row = 14
+    ws.merge_cells(f'B{row}:H{row}')
+    ws[f'B{row}'] = f"⚓ בנמל - ממתינות לשחרור ({len(at_port)} מכולות | ${at_port_fob:,.0f})"
+    ws[f'B{row}'].font = Font(name='Arial', size=14, bold=True, color="FFFFFF")
+    ws[f'B{row}'].fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid")
+    ws[f'B{row}'].alignment = Alignment(horizontal='center')
+    for col in range(2, 9):
+        ws.cell(row=row, column=col).fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid")
+        ws.cell(row=row, column=col).border = thin_border
+
+    row += 1
+    headers_port = ["#", "הזמנה", "מכולה", "ETA", "FOB $", "ימים בנמל", "גיליון"]
+    for col, header in enumerate(headers_port, 2):
         cell = ws.cell(row=row, column=col, value=header)
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
         cell.alignment = Alignment(horizontal='center')
         cell.border = thin_border
-    
-    containers_sorted = sorted(containers, key=lambda x: calculate_days_in_port(x['eta']), reverse=True)
-    
-    for i, cont in enumerate(containers_sorted, 1):
+
+    for i, cont in enumerate(at_port, 1):
         row += 1
         days = calculate_days_in_port(cont['eta'])
-        
+
         if days > 30:
             row_fill = RED_FILL
         elif days > 14:
             row_fill = ORANGE_FILL
         else:
             row_fill = GREEN_FILL
-        
+
         eta_fmt = ''
         if cont['eta']:
             try:
                 eta_fmt = datetime.strptime(cont['eta'], '%Y-%m-%d').strftime('%d.%m.%y')
             except:
                 eta_fmt = cont['eta']
-        
-        values = [i, cont['po'], cont['container'] or '-', cont['supplier'][:20], 
-                  eta_fmt or '-', f"${cont['fob_total']:,.0f}", str(days), f"→ {cont['po']}"]
-        
+
+        values = [i, cont['po'], cont['container'] or '-', eta_fmt or '-',
+                  f"${cont['fob_total']:,.0f}", str(days), f"→ {cont['po']}"]
+
         for col, value in enumerate(values, 2):
             cell = ws.cell(row=row, column=col, value=value)
             cell.font = DATA_FONT
             cell.alignment = Alignment(horizontal='center')
             cell.border = thin_border
-            if col == 8:
+            if col == 7:  # Days column
                 cell.fill = row_fill
+                cell.font = Font(name='Arial', size=14, bold=True)
+
+    # ========== TABLE 2: ON SHIP (באוניה) ==========
+    row += 2
+    ws.merge_cells(f'B{row}:H{row}')
+    ws[f'B{row}'] = f"🚢 באוניה - בדרך לישראל ({len(on_ship)} מכולות | ${on_ship_fob:,.0f})"
+    ws[f'B{row}'].font = Font(name='Arial', size=14, bold=True, color="FFFFFF")
+    ws[f'B{row}'].fill = PatternFill(start_color="27AE60", end_color="27AE60", fill_type="solid")
+    ws[f'B{row}'].alignment = Alignment(horizontal='center')
+    for col in range(2, 9):
+        ws.cell(row=row, column=col).fill = PatternFill(start_color="27AE60", end_color="27AE60", fill_type="solid")
+        ws.cell(row=row, column=col).border = thin_border
+
+    row += 1
+    headers_ship = ["#", "הזמנה", "מכולה", "ETA צפוי", "FOB $", "ימים להגעה", "גיליון"]
+    for col, header in enumerate(headers_ship, 2):
+        cell = ws.cell(row=row, column=col, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+    for i, cont in enumerate(on_ship, 1):
+        row += 1
+
+        # Calculate days until arrival
+        days_until = 0
+        eta_fmt = ''
+        if cont['eta']:
+            try:
+                eta_date = datetime.strptime(cont['eta'], '%Y-%m-%d')
+                eta_fmt = eta_date.strftime('%d.%m.%y')
+                days_until = max(0, (eta_date - datetime.now()).days)
+            except:
+                eta_fmt = cont['eta']
+
+        values = [i, cont['po'], cont['container'] or '-', eta_fmt or '-',
+                  f"${cont['fob_total']:,.0f}", str(days_until), f"→ {cont['po']}"]
+
+        for col, value in enumerate(values, 2):
+            cell = ws.cell(row=row, column=col, value=value)
+            cell.font = DATA_FONT
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = thin_border
+            if col == 7:  # Days column
+                cell.fill = SHIP_FILL
 
 
 def create_container_sheet(wb, container, items, usd_rate):
