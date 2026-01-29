@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Daily Containers Report - Gaya Foods (Enhanced Version)
-Fetches container data from Monday.com, creates Excel with landing cost calculations,
-sends via WhatsApp to Ohad and Kiril
+- Container list from Monday.com (status, ETA)
+- Items from Priority ERP (PORDERITEMS_SUBFORM)
+- Landing cost calculations with shipping input cell
+- Sends via WhatsApp to Ohad and Kiril
 """
 
 import os
@@ -16,6 +18,9 @@ from openpyxl.utils import get_column_letter
 # Configuration
 MONDAY_API_TOKEN = os.environ.get('MONDAY_API_TOKEN')
 MONDAY_API_URL = "https://api.monday.com/v2"
+PRIORITY_API_HOST = os.environ.get('PRIORITY_API_HOST', 'https://p.priority-connect.online/odata/Priority/tabzfdbb.ini/a230521')
+PRIORITY_API_TOKEN = os.environ.get('PRIORITY_API_TOKEN')
+PRIORITY_API_PASSWORD = os.environ.get('PRIORITY_API_PASSWORD', 'PAT')
 TIMELINES_API_KEY = os.environ.get('TIMELINES_API_KEY')
 
 # Board IDs
@@ -75,22 +80,34 @@ def monday_query(query):
         return response.json()
     else:
         print(f"Monday API error: {response.status_code}")
-        print(response.text)
         return None
 
 
+def priority_query(table, params):
+    """Execute Priority OData query"""
+    url = f"{PRIORITY_API_HOST}/{table}"
+    response = requests.get(
+        url,
+        params=params,
+        auth=(PRIORITY_API_TOKEN, PRIORITY_API_PASSWORD),
+        headers={'Content-Type': 'application/json'}
+    )
+    if response.status_code == 200:
+        return response.json().get('value', [])
+    else:
+        print(f"Priority API error: {response.status_code} - {response.text}")
+        return []
+
+
 def fetch_usd_rate():
-    """Fetch USD exchange rate from Monday.com Currencies board"""
+    """Fetch USD exchange rate from Monday.com"""
     query = f'''
     {{
         boards(ids: [{CURRENCIES_BOARD_ID}]) {{
             items_page(limit: 10) {{
                 items {{
                     name
-                    column_values {{
-                        id
-                        text
-                    }}
+                    column_values {{ id text }}
                 }}
             }}
         }}
@@ -104,11 +121,11 @@ def fetch_usd_rate():
                 for col in item['column_values']:
                     if col['id'] == 'numeric_mkqyfw35':
                         return float(col['text']) if col['text'] else 3.5
-    return 3.5  # Default
+    return 3.5
 
 
-def fetch_containers():
-    """Fetch containers with status 'בדרך' or 'כנמ ללא BL' from Monday.com"""
+def fetch_containers_from_monday():
+    """Fetch containers with status 'בדרך' or 'כנמ ללא BL' from Monday"""
     query = f'''
     {{
         boards(ids: [{ORDERS_BOARD_ID}]) {{
@@ -116,19 +133,7 @@ def fetch_containers():
                 items {{
                     id
                     name
-                    column_values {{
-                        id
-                        text
-                        value
-                    }}
-                    subitems {{
-                        id
-                        name
-                        column_values {{
-                            id
-                            text
-                        }}
-                    }}
+                    column_values {{ id text }}
                 }}
             }}
         }}
@@ -145,68 +150,54 @@ def fetch_containers():
         cols = {c['id']: c['text'] for c in item['column_values']}
         status = cols.get('color_mkpn4sz9', '')
         
-        # Filter: only "בדרך" or "כנ"מ ללא BL"
+        # Filter by status
         if status not in ['בדרך', 'כנ"מ ללא BL', 'כנמ ללא BL']:
             continue
         
-        # Skip items without PO number
         po_number = cols.get('text_mkpnmg1y', '')
         if not po_number:
             continue
         
-        # Parse subitems
-        subitems = []
-        for si in item.get('subitems', []):
-            si_cols = {c['id']: c['text'] for c in si['column_values']}
-            qty_str = si_cols.get('numeric_mkqd6mgd', '0')
-            price_str = si_cols.get('numeric_mkqd8cs2', '0')
-            
-            # Skip discount lines (negative quantities)
-            try:
-                qty = float(qty_str) if qty_str else 0
-                if qty <= 0:
-                    continue
-            except:
-                qty = 0
-            
-            try:
-                price = float(price_str) if price_str else 0
-            except:
-                price = 0
-            
-            subitems.append({
-                'sku': si['name'],
-                'description': si_cols.get('long_text_mkqdfhcn', ''),
-                'quantity': int(qty),
-                'unit': si_cols.get('text_mkqdkx16', 'קרט'),
-                'unit_price': price
-            })
-        
-        # Get FOB total
-        fob_str = cols.get('numeric_mkpnhbgt', '0')
-        try:
-            fob_total = float(fob_str) if fob_str else 0
-        except:
-            fob_total = 0
-        
-        # Get supplier name from relation
-        supplier = cols.get('board_relation_mkr56mp8', '')
-        if not supplier:
-            supplier = cols.get('text_mkpnsenz', 'לא ידוע')
-        
         containers.append({
             'po': po_number,
             'container': cols.get('text_mkpnqkdj', ''),
-            'supplier': supplier,
+            'supplier': cols.get('text_mkpnsenz', '') or 'לא ידוע',
             'eta': cols.get('date_mkpnbh0z', ''),
-            'etd': cols.get('date_mkpnywp8', ''),
-            'fob_total': fob_total,
+            'fob_total': float(cols.get('numeric_mkpnhbgt', '0') or '0'),
             'currency': cols.get('text_mkpnkq', '$'),
             'status': status,
-            'items': subitems
         })
     
     return containers
+
+
+def fetch_items_from_priority(po_number):
+    """Fetch items for a PO from Priority PORDERITEMS_SUBFORM"""
+    params = {
+        '$filter': f"ORDNAME eq '{po_number}'",
+        '$select': 'ORDNAME,CDES',
+        '$expand': 'PORDERITEMS_SUBFORM($select=PARTNAME,PDES,TQUANT,PRICE,QPRICE)'
+    }
+    data = priority_query('PORDERS', params)
+    
+    if not data:
+        return []
+    
+    items = []
+    for order in data:
+        for item in order.get('PORDERITEMS_SUBFORM', []):
+            qty = item.get('TQUANT', 0)
+            if qty <= 0:
+                continue
+            items.append({
+                'sku': item.get('PARTNAME', ''),
+                'description': item.get('PDES', ''),
+                'quantity': int(qty),
+                'unit': 'קרט',
+                'unit_price': item.get('PRICE', 0)
+            })
+    
+    return items
 
 
 def calculate_days_in_port(eta_str):
@@ -225,8 +216,7 @@ def create_summary_sheet(ws, containers, usd_rate):
     """Create summary dashboard sheet"""
     ws.sheet_view.rightToLeft = True
     
-    # Column widths
-    widths = [3, 15, 18, 20, 12, 15, 12, 15]
+    widths = [3, 15, 18, 25, 12, 15, 12, 15]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     
@@ -237,7 +227,7 @@ def create_summary_sheet(ws, containers, usd_rate):
     ws['B2'].alignment = Alignment(horizontal='center')
     
     ws.merge_cells('B3:H3')
-    ws['B3'] = f"📅 תאריך: {datetime.now().strftime('%d.%m.%Y')} | 💵 שער דולר: {usd_rate}"
+    ws['B3'] = f"📅 {datetime.now().strftime('%d.%m.%Y')} | 💵 שער: {usd_rate}"
     ws['B3'].font = Font(size=12, color="7F8C8D")
     ws['B3'].alignment = Alignment(horizontal='center')
     
@@ -246,7 +236,6 @@ def create_summary_sheet(ws, containers, usd_rate):
     critical_count = sum(1 for c in containers if calculate_days_in_port(c['eta']) > 30)
     
     row = 5
-    # Total containers
     ws.merge_cells(f'B{row}:C{row+1}')
     ws[f'B{row}'] = str(len(containers))
     ws[f'B{row}'].font = BIG_NUMBER
@@ -257,7 +246,6 @@ def create_summary_sheet(ws, containers, usd_rate):
     ws[f'B{row+2}'].font = LABEL_FONT
     ws[f'B{row+2}'].alignment = Alignment(horizontal='center')
     
-    # Total FOB
     ws.merge_cells(f'D{row}:E{row+1}')
     ws[f'D{row}'] = f"${total_fob/1000:.0f}K"
     ws[f'D{row}'].font = BIG_NUMBER
@@ -268,7 +256,6 @@ def create_summary_sheet(ws, containers, usd_rate):
     ws[f'D{row+2}'].font = LABEL_FONT
     ws[f'D{row+2}'].alignment = Alignment(horizontal='center')
     
-    # Critical
     ws.merge_cells(f'F{row}:G{row+1}')
     ws[f'F{row}'] = f"{critical_count} 🔴"
     ws[f'F{row}'].font = Font(name='Arial', size=28, bold=True, color="C0392B")
@@ -279,7 +266,7 @@ def create_summary_sheet(ws, containers, usd_rate):
     ws[f'F{row+2}'].font = LABEL_FONT
     ws[f'F{row+2}'].alignment = Alignment(horizontal='center')
     
-    # Table header
+    # Table
     row = 10
     headers = ["#", "הזמנה", "מכולה", "ספק", "ETA", "FOB $", "ימים", "גיליון"]
     for col, header in enumerate(headers, 2):
@@ -289,15 +276,12 @@ def create_summary_sheet(ws, containers, usd_rate):
         cell.alignment = Alignment(horizontal='center')
         cell.border = thin_border
     
-    # Sort by days descending
     containers_sorted = sorted(containers, key=lambda x: calculate_days_in_port(x['eta']), reverse=True)
     
-    # Table data
     for i, cont in enumerate(containers_sorted, 1):
         row += 1
         days = calculate_days_in_port(cont['eta'])
         
-        # Color based on days
         if days > 30:
             row_fill = RED_FILL
         elif days > 14:
@@ -305,49 +289,31 @@ def create_summary_sheet(ws, containers, usd_rate):
         else:
             row_fill = GREEN_FILL
         
-        eta_formatted = ''
+        eta_fmt = ''
         if cont['eta']:
             try:
-                eta_dt = datetime.strptime(cont['eta'], '%Y-%m-%d')
-                eta_formatted = eta_dt.strftime('%d.%m.%y')
+                eta_fmt = datetime.strptime(cont['eta'], '%Y-%m-%d').strftime('%d.%m.%y')
             except:
-                eta_formatted = cont['eta']
+                eta_fmt = cont['eta']
         
-        values = [
-            i,
-            cont['po'],
-            cont['container'] or '-',
-            cont['supplier'][:15] if cont['supplier'] else '-',
-            eta_formatted or '-',
-            f"${cont['fob_total']:,.0f}",
-            str(days),
-            f"→ {cont['po']}"
-        ]
+        values = [i, cont['po'], cont['container'] or '-', cont['supplier'][:20], 
+                  eta_fmt or '-', f"${cont['fob_total']:,.0f}", str(days), f"→ {cont['po']}"]
         
         for col, value in enumerate(values, 2):
             cell = ws.cell(row=row, column=col, value=value)
             cell.font = DATA_FONT
             cell.alignment = Alignment(horizontal='center')
             cell.border = thin_border
-            if col in [8]:  # Days column
+            if col == 8:
                 cell.fill = row_fill
-    
-    # Navigation note
-    row += 2
-    ws.merge_cells(f'B{row}:H{row}')
-    ws[f'B{row}'] = "💡 לחץ על שם הגיליון למטה לפירוט מק\"טים ועלות נחיתה"
-    ws[f'B{row}'].font = Font(size=11, italic=True, color="7F8C8D")
-    ws[f'B{row}'].alignment = Alignment(horizontal='center')
 
 
-def create_container_sheet(wb, container, usd_rate):
-    """Create detailed sheet for a container"""
-    # Sanitize sheet name
-    sheet_name = container['po'][:31] if container['po'] else 'Unknown'
+def create_container_sheet(wb, container, items, usd_rate):
+    """Create detailed sheet for a container with items from Priority"""
+    sheet_name = container['po'][:31]
     ws = wb.create_sheet(title=sheet_name)
     ws.sheet_view.rightToLeft = True
     
-    # Column widths
     widths = [4, 20, 12, 40, 10, 14, 14, 14, 14, 18]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -361,27 +327,25 @@ def create_container_sheet(wb, container, usd_rate):
     
     # Container details
     row = 4
-    eta_formatted = ''
+    eta_fmt = ''
     if container['eta']:
         try:
-            eta_dt = datetime.strptime(container['eta'], '%Y-%m-%d')
-            eta_formatted = eta_dt.strftime('%d.%m.%Y')
+            eta_fmt = datetime.strptime(container['eta'], '%Y-%m-%d').strftime('%d.%m.%Y')
         except:
-            eta_formatted = container['eta']
+            eta_fmt = container['eta']
     
-    details = [
-        ("מספר מכולה:", container['container'] or '-', "ספק:", container['supplier'] or '-'),
-        ("ETA:", eta_formatted or '-', "סטטוס:", container['status']),
-    ]
-    for d in details:
-        ws.cell(row=row, column=2, value=d[0]).font = LABEL_FONT
-        ws.cell(row=row, column=3, value=d[1]).font = DATA_FONT
-        ws.cell(row=row, column=5, value=d[2]).font = LABEL_FONT
-        ws.cell(row=row, column=6, value=d[3]).font = DATA_FONT
-        row += 1
+    ws.cell(row=row, column=2, value="מספר מכולה:").font = LABEL_FONT
+    ws.cell(row=row, column=3, value=container['container'] or '-').font = DATA_FONT
+    ws.cell(row=row, column=5, value="ספק:").font = LABEL_FONT
+    ws.cell(row=row, column=6, value=container['supplier']).font = DATA_FONT
+    row += 1
+    ws.cell(row=row, column=2, value="ETA:").font = LABEL_FONT
+    ws.cell(row=row, column=3, value=eta_fmt or '-').font = DATA_FONT
+    ws.cell(row=row, column=5, value="סטטוס:").font = LABEL_FONT
+    ws.cell(row=row, column=6, value=container['status']).font = DATA_FONT
     
     # Parameters section
-    row += 1
+    row += 2
     ws.merge_cells(f'B{row}:J{row}')
     ws[f'B{row}'] = "⚙️ פרמטרים לחישוב"
     ws[f'B{row}'].font = HEADER_FONT
@@ -391,7 +355,6 @@ def create_container_sheet(wb, container, usd_rate):
         ws.cell(row=row, column=col).fill = SECTION_FILL
         ws.cell(row=row, column=col).border = thin_border
     
-    # Rate + Port
     row += 1
     rate_row = row
     ws.cell(row=row, column=2, value="שער דולר:").font = LABEL_FONT
@@ -402,11 +365,9 @@ def create_container_sheet(wb, container, usd_rate):
     rate_cell.border = thin_border
     
     ws.cell(row=row, column=5, value="עלות נמל (₪):").font = LABEL_FONT
-    port_cell = ws.cell(row=row, column=6, value=PORT_COST_ILS)
-    port_cell.font = DATA_FONT
-    port_cell.number_format = '#,##0'
-    port_cell.fill = LIGHT_BLUE
-    port_cell.border = thin_border
+    ws.cell(row=row, column=6, value=PORT_COST_ILS).font = DATA_FONT
+    ws.cell(row=row, column=6).fill = LIGHT_BLUE
+    ws.cell(row=row, column=6).border = thin_border
     
     ws.cell(row=row, column=8, value="מכס:").font = LABEL_FONT
     ws.cell(row=row, column=9, value="0%").font = DATA_FONT
@@ -420,8 +381,7 @@ def create_container_sheet(wb, container, usd_rate):
     shipping_cell.border = medium_border
     shipping_cell.font = INPUT_FONT
     shipping_cell.alignment = Alignment(horizontal='center')
-    
-    ws.cell(row=row, column=5, value="← מלא כאן").font = Font(name='Arial', size=12, italic=True, color="888888")
+    ws.cell(row=row, column=5, value="← מלא כאן").font = Font(size=12, italic=True, color="888888")
     
     # Items table
     row += 2
@@ -434,7 +394,6 @@ def create_container_sheet(wb, container, usd_rate):
         ws.cell(row=row, column=col).fill = SECTION_FILL
         ws.cell(row=row, column=col).border = thin_border
     
-    # Table headers
     row += 1
     headers = ["#", "מק\"ט", "כמות", "תיאור", "FOB/יח' $", "FOB סה\"כ $", "הובלה/יח' $", "נמל/יח' ₪", "עלות נחיתה/יח' ₪"]
     for col, header in enumerate(headers, 2):
@@ -445,8 +404,6 @@ def create_container_sheet(wb, container, usd_rate):
         cell.border = thin_border
     ws.row_dimensions[row].height = 35
     
-    # Calculate total units
-    items = container.get('items', [])
     if not items:
         row += 1
         ws.merge_cells(f'B{row}:J{row}')
@@ -457,13 +414,12 @@ def create_container_sheet(wb, container, usd_rate):
     
     total_units = sum(item['quantity'] for item in items if item['quantity'] > 0)
     if total_units == 0:
-        total_units = 1  # Avoid division by zero
+        total_units = 1
     
-    # Data rows
     row += 1
     first_data_row = row
-    shipping_cell_ref = f"$C${shipping_row}"
-    rate_cell_ref = f"$C${rate_row}"
+    shipping_ref = f"$C${shipping_row}"
+    rate_ref = f"$C${rate_row}"
     
     for i, item in enumerate(items, 1):
         if item['quantity'] <= 0:
@@ -477,57 +433,51 @@ def create_container_sheet(wb, container, usd_rate):
         ws.cell(row=row, column=3, value=item['sku']).font = DATA_FONT
         ws.cell(row=row, column=3).alignment = Alignment(horizontal='center')
         
-        qty_cell = ws.cell(row=row, column=4, value=item['quantity'])
-        qty_cell.font = DATA_FONT
-        qty_cell.number_format = '#,##0'
-        qty_cell.alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=4, value=item['quantity']).font = DATA_FONT
+        ws.cell(row=row, column=4).number_format = '#,##0'
+        ws.cell(row=row, column=4).alignment = Alignment(horizontal='center')
         
         desc = item['description'][:35] if item['description'] else ''
         ws.cell(row=row, column=5, value=desc).font = DATA_FONT
         
-        fob_unit_cell = ws.cell(row=row, column=6, value=item['unit_price'])
-        fob_unit_cell.font = DATA_FONT
-        fob_unit_cell.number_format = '$#,##0.00'
-        fob_unit_cell.alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=6, value=item['unit_price']).font = DATA_FONT
+        ws.cell(row=row, column=6).number_format = '$#,##0.00'
+        ws.cell(row=row, column=6).alignment = Alignment(horizontal='center')
         
-        fob_total_cell = ws.cell(row=row, column=7, value=fob_total)
-        fob_total_cell.font = DATA_FONT
-        fob_total_cell.number_format = '$#,##0'
-        fob_total_cell.alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=7, value=fob_total).font = DATA_FONT
+        ws.cell(row=row, column=7).number_format = '$#,##0'
+        ws.cell(row=row, column=7).alignment = Alignment(horizontal='center')
         
         # Shipping per unit formula
-        shipping_formula = f'=IF({shipping_cell_ref}="","",{shipping_cell_ref}/{total_units})'
-        ship_cell = ws.cell(row=row, column=8, value=shipping_formula)
-        ship_cell.font = CALC_FONT
-        ship_cell.fill = CALC_FILL
-        ship_cell.number_format = '$#,##0.00'
-        ship_cell.alignment = Alignment(horizontal='center')
+        ship_formula = f'=IF({shipping_ref}="","",{shipping_ref}/{total_units})'
+        ws.cell(row=row, column=8, value=ship_formula).font = CALC_FONT
+        ws.cell(row=row, column=8).fill = CALC_FILL
+        ws.cell(row=row, column=8).number_format = '$#,##0.00'
+        ws.cell(row=row, column=8).alignment = Alignment(horizontal='center')
         
         # Port per unit
         port_per_unit = PORT_COST_ILS / total_units
-        port_cell = ws.cell(row=row, column=9, value=port_per_unit)
-        port_cell.font = DATA_FONT
-        port_cell.fill = CALC_FILL
-        port_cell.number_format = '₪#,##0.00'
-        port_cell.alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=9, value=port_per_unit).font = DATA_FONT
+        ws.cell(row=row, column=9).fill = CALC_FILL
+        ws.cell(row=row, column=9).number_format = '₪#,##0.00'
+        ws.cell(row=row, column=9).alignment = Alignment(horizontal='center')
         
         # Landing cost formula
-        landing_formula = f'=IF(H{row}="",F{row}*{rate_cell_ref}+I{row},(F{row}+H{row})*{rate_cell_ref}+I{row})'
-        landing_cell = ws.cell(row=row, column=10, value=landing_formula)
-        landing_cell.font = Font(name='Arial', size=14, bold=True, color="27AE60")
-        landing_cell.fill = CALC_FILL
-        landing_cell.number_format = '₪#,##0.00'
-        landing_cell.alignment = Alignment(horizontal='center')
+        landing_formula = f'=IF(H{row}="",F{row}*{rate_ref}+I{row},(F{row}+H{row})*{rate_ref}+I{row})'
+        ws.cell(row=row, column=10, value=landing_formula)
+        ws.cell(row=row, column=10).font = Font(name='Arial', size=14, bold=True, color="27AE60")
+        ws.cell(row=row, column=10).fill = CALC_FILL
+        ws.cell(row=row, column=10).number_format = '₪#,##0.00'
+        ws.cell(row=row, column=10).alignment = Alignment(horizontal='center')
         
         for col in range(2, 11):
             ws.cell(row=row, column=col).border = thin_border
-        
         ws.row_dimensions[row].height = 25
         row += 1
     
     last_data_row = row - 1
     
-    # Totals row
+    # Totals
     ws.merge_cells(f'B{row}:E{row}')
     ws.cell(row=row, column=2, value="סה\"כ").font = HEADER_FONT
     ws.cell(row=row, column=2).fill = HEADER_FILL
@@ -539,12 +489,11 @@ def create_container_sheet(wb, container, usd_rate):
     ws.cell(row=row, column=6).fill = HEADER_FILL
     ws.cell(row=row, column=6).border = thin_border
     
-    fob_sum = ws.cell(row=row, column=7, value=f"=SUM(G{first_data_row}:G{last_data_row})")
-    fob_sum.font = HEADER_FONT
-    fob_sum.fill = HEADER_FILL
-    fob_sum.number_format = '$#,##0'
-    fob_sum.alignment = Alignment(horizontal='center')
-    fob_sum.border = thin_border
+    ws.cell(row=row, column=7, value=f"=SUM(G{first_data_row}:G{last_data_row})").font = HEADER_FONT
+    ws.cell(row=row, column=7).fill = HEADER_FILL
+    ws.cell(row=row, column=7).number_format = '$#,##0'
+    ws.cell(row=row, column=7).alignment = Alignment(horizontal='center')
+    ws.cell(row=row, column=7).border = thin_border
     
     for col in [8, 9, 10]:
         ws.cell(row=row, column=col).fill = HEADER_FILL
@@ -553,25 +502,25 @@ def create_container_sheet(wb, container, usd_rate):
     # Legend
     row += 2
     ws.merge_cells(f'B{row}:J{row}')
-    ws[f'B{row}'] = f"📝 מלא את עלות ההובלה בתא הצהוב ← כל החישובים יתעדכנו | סה\"כ יחידות: {total_units:,}"
+    ws[f'B{row}'] = f"📝 מלא הובלה בתא הצהוב ← החישובים יתעדכנו | סה\"כ יחידות: {total_units:,}"
     ws[f'B{row}'].font = Font(size=11, italic=True, color="666666")
     ws[f'B{row}'].alignment = Alignment(horizontal='center')
 
 
 def create_excel_report(containers, usd_rate):
-    """Create full Excel report with summary + per-container sheets"""
+    """Create full Excel with summary + per-container sheets"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "סיכום מכולות"
     
-    # Create summary sheet
     create_summary_sheet(ws, containers, usd_rate)
     
-    # Create per-container sheets
     for container in containers:
-        create_container_sheet(wb, container, usd_rate)
+        print(f"  Fetching items for {container['po']}...")
+        items = fetch_items_from_priority(container['po'])
+        print(f"    Found {len(items)} items")
+        create_container_sheet(wb, container, items, usd_rate)
     
-    # Save
     filename = f"דוח_מכולות_כנמ_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
     wb.save(filename)
     return filename
@@ -581,73 +530,57 @@ def upload_file(filepath):
     """Upload file to TimelineAI"""
     url = "https://app.timelines.ai/integrations/api/files_upload"
     headers = {"Authorization": f"Bearer {TIMELINES_API_KEY}"}
-    
     with open(filepath, 'rb') as f:
         response = requests.post(url, headers=headers, files={'file': f})
-    
     if response.status_code == 200:
-        data = response.json()
-        return data.get('data', {}).get('uid')
-    else:
-        print(f"Error uploading file: {response.status_code}")
-        return None
+        return response.json().get('data', {}).get('uid')
+    print(f"Upload error: {response.status_code}")
+    return None
 
 
 def send_whatsapp(phone, file_uid, text):
     """Send WhatsApp message with file"""
     url = "https://app.timelines.ai/integrations/api/messages"
-    headers = {
-        "Authorization": f"Bearer {TIMELINES_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "phone": phone,
-        "file_uid": file_uid,
-        "text": text
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
+    headers = {"Authorization": f"Bearer {TIMELINES_API_KEY}", "Content-Type": "application/json"}
+    response = requests.post(url, headers=headers, json={"phone": phone, "file_uid": file_uid, "text": text})
     return response.status_code == 200
 
 
 def main():
-    print("💵 Fetching USD rate from Monday.com...")
+    print("💵 Fetching USD rate...")
     usd_rate = fetch_usd_rate()
     print(f"USD Rate: {usd_rate}")
     
-    print("🚢 Fetching containers from Monday.com...")
-    containers = fetch_containers()
+    print("🚢 Fetching containers from Monday...")
+    containers = fetch_containers_from_monday()
     
     if not containers:
-        print("No containers found with status 'בדרך' or 'כנמ ללא BL'")
+        print("No containers found")
         return
     
     print(f"Found {len(containers)} containers")
     
-    print("📊 Creating Excel report...")
+    print("📊 Creating Excel with items from Priority...")
     filename = create_excel_report(containers, usd_rate)
     print(f"Created: {filename}")
     
-    print("📤 Uploading file...")
+    print("📤 Uploading...")
     file_uid = upload_file(filename)
-    
     if not file_uid:
-        print("Failed to upload file")
+        print("Upload failed")
         return
     
-    print("📱 Sending to WhatsApp...")
+    print("📱 Sending WhatsApp...")
     today = datetime.now().strftime('%d.%m.%Y')
-    critical_count = sum(1 for c in containers if calculate_days_in_port(c['eta']) > 30)
+    critical = sum(1 for c in containers if calculate_days_in_port(c['eta']) > 30)
     text = f"🚢 דוח מכולות בכנ\"מ - Gaya Foods\n📅 {today}\n📦 {len(containers)} מכולות"
-    if critical_count > 0:
-        text += f"\n🔴 {critical_count} קריטי (>30 יום)"
-    text += "\n\n🤖 עדכון אוטומטי יומי"
+    if critical > 0:
+        text += f"\n🔴 {critical} קריטי (>30 יום)"
+    text += "\n\n🤖 עדכון יומי"
     
-    for recipient in RECIPIENTS:
-        success = send_whatsapp(recipient['phone'], file_uid, text)
-        status = "✅" if success else "❌"
-        print(f"{status} {recipient['name']}: {recipient['phone']}")
+    for r in RECIPIENTS:
+        ok = send_whatsapp(r['phone'], file_uid, text)
+        print(f"{'✅' if ok else '❌'} {r['name']}: {r['phone']}")
     
     print("\n✅ Done!")
 
