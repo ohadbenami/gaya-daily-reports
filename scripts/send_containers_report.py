@@ -124,58 +124,63 @@ def fetch_usd_rate():
     return 3.5
 
 
-def fetch_containers_from_monday():
-    """Fetch containers with active shipping statuses from Monday (בדרך, באוניה, כנמ ללא BL, etc.)"""
-    query = f'''
-    {{
-        boards(ids: [{ORDERS_BOARD_ID}]) {{
-            items_page(limit: 100) {{
-                items {{
-                    id
-                    name
-                    column_values {{ id text }}
-                }}
-            }}
-        }}
-    }}
-    '''
-    result = monday_query(query)
-    if not result or 'data' not in result:
-        return []
-    
+def fetch_containers_from_priority():
+    """Fetch Ardo containers with active shipping statuses directly from Priority ERP"""
+    # Valid statuses for containers in transit/at port
+    valid_statuses = [
+        'באוניה',         # On ship - in transit
+        'כנ"מ ללא BL',    # At port without BL
+    ]
+
+    # Statuses to exclude
+    excluded_statuses = [
+        'סגור',
+        'סגורה',
+        'מבוטלת',
+        'טיוטא',
+        'נשלחה ליצרן',
+    ]
+
+    # Build OData filter - Ardo only, exclude closed/cancelled/draft
+    exclude_filters = " and ".join([f"STATDES ne '{s}'" for s in excluded_statuses])
+
+    params = {
+        '$filter': f"CDES eq 'Ardo Company Ltd' and {exclude_filters}",
+        '$select': 'ORDNAME,SUPNAME,CDES,CURDATE,QPRICE,STATDES,IMPFNUM,NOA_ETA,NOA_KONTAINER',
+        '$orderby': 'NOA_ETA asc',
+        '$top': 100
+    }
+
+    data = priority_query('PORDERS', params)
+
     containers = []
-    items = result['data']['boards'][0]['items_page']['items']
-    
-    for item in items:
-        cols = {c['id']: c['text'] for c in item['column_values']}
-        status = cols.get('color_mkpn4sz9', '')
-        
-        # Filter by status - include all active shipping statuses
-        valid_statuses = [
-            'בדרך',           # On the way
-            'באוניה',         # On ship
-            'כנ"מ ללא BL',    # At port without BL
-            'כנמ ללא BL',     # At port without BL (variant)
-            'בנמל',           # At port
-            'ממתין לשחרור',   # Waiting for release
-        ]
+    for order in data:
+        status = order.get('STATDES', '')
+
+        # Only include באוניה and כנ"מ ללא BL
         if status not in valid_statuses:
             continue
-        
-        po_number = cols.get('text_mkpnmg1y', '')
-        if not po_number:
+
+        po = order.get('ORDNAME', '')
+        if not po:
             continue
-        
+
+        # Parse ETA date
+        eta = order.get('NOA_ETA', '')
+        if eta and 'T' in str(eta):
+            eta = str(eta).split('T')[0]
+
         containers.append({
-            'po': po_number,
-            'container': cols.get('text_mkpnqkdj', ''),
-            'supplier': cols.get('text_mkpnsenz', '') or 'לא ידוע',
-            'eta': cols.get('date_mkpnbh0z', ''),
-            'fob_total': float(cols.get('numeric_mkpnhbgt', '0') or '0'),
-            'currency': cols.get('text_mkpnkq', '$'),
+            'po': po,
+            'container': order.get('NOA_KONTAINER', '') or order.get('IMPFNUM', '') or '',
+            'supplier': order.get('CDES', '') or order.get('SUPNAME', '') or 'Ardo',
+            'eta': eta,
+            'fob_total': float(order.get('QPRICE', 0) or 0),
+            'currency': '$',
             'status': status,
         })
-    
+
+    print(f"  Statuses found: {set(order.get('STATDES') for order in data)}")
     return containers
 
 
@@ -559,8 +564,8 @@ def main():
     usd_rate = fetch_usd_rate()
     print(f"USD Rate: {usd_rate}")
     
-    print("🚢 Fetching containers from Monday...")
-    containers = fetch_containers_from_monday()
+    print("🚢 Fetching Ardo containers from Priority...")
+    containers = fetch_containers_from_priority()
     
     if not containers:
         print("No containers found")
