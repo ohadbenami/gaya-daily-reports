@@ -125,7 +125,7 @@ def fetch_usd_rate():
 
 
 def fetch_containers_from_monday():
-    """Fetch containers with status 'בדרך' or 'כנמ ללא BL' from Monday"""
+    """Fetch containers with active shipping statuses from Monday (בדרך, באוניה, כנמ ללא BL, etc.)"""
     query = f'''
     {{
         boards(ids: [{ORDERS_BOARD_ID}]) {{
@@ -150,8 +150,16 @@ def fetch_containers_from_monday():
         cols = {c['id']: c['text'] for c in item['column_values']}
         status = cols.get('color_mkpn4sz9', '')
         
-        # Filter by status
-        if status not in ['בדרך', 'כנ"מ ללא BL', 'כנמ ללא BL']:
+        # Filter by status - include all active shipping statuses
+        valid_statuses = [
+            'בדרך',           # On the way
+            'באוניה',         # On ship
+            'כנ"מ ללא BL',    # At port without BL
+            'כנמ ללא BL',     # At port without BL (variant)
+            'בנמל',           # At port
+            'ממתין לשחרור',   # Waiting for release
+        ]
+        if status not in valid_statuses:
             continue
         
         po_number = cols.get('text_mkpnmg1y', '')
