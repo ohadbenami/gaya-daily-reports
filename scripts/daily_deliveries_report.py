@@ -286,27 +286,50 @@ def group_by_driver(deliveries: list) -> dict:
     return dict(sorted(grouped.items()))
 
 
+def group_by_driver_and_customer(deliveries: list) -> dict:
+    """
+    Group deliveries by driver, then by customer.
+    Returns: {driver: {customer: [items]}}
+    """
+    grouped = {}
+    for d in deliveries:
+        driver = d.get("driver", "לא משויך")
+        customer = d.get("customer", "לקוח לא ידוע")
+
+        if driver not in grouped:
+            grouped[driver] = {}
+        if customer not in grouped[driver]:
+            grouped[driver][customer] = []
+        grouped[driver][customer].append(d)
+
+    # Sort drivers, then customers within each driver
+    return {k: dict(sorted(v.items())) for k, v in sorted(grouped.items())}
+
+
 def create_excel_report(deliveries: list, target_date: str) -> bytes:
     """
-    Create a styled Excel report with deliveries grouped by driver.
+    Create a styled Excel report with TWO sheets:
+    1. Summary sheet - only customers with total pallets (main view)
+    2. Details sheet - full breakdown of all items
 
     Returns:
         Excel file as bytes
     """
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "הפצות"
 
-    # Set RTL
-    ws.sheet_view.rightToLeft = True
+    # ============================================
+    # SHEET 1: SUMMARY (סיכום) - Main View
+    # ============================================
+    ws_summary = wb.active
+    ws_summary.title = "סיכום"
+    ws_summary.sheet_view.rightToLeft = True
 
     # Styles
     header_font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
     header_fill = PatternFill(start_color='1D2D44', end_color='1D2D44', fill_type='solid')
-    header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    header_alignment = Alignment(horizontal='center', vertical='center')
 
     cell_font = Font(name='Arial', size=11)
-    cell_alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
     center_alignment = Alignment(horizontal='center', vertical='center')
 
     thin_border = Border(
@@ -318,104 +341,168 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
 
     # Title
     date_formatted = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-    ws.merge_cells('A1:H1')
-    title_cell = ws['A1']
-    title_cell.value = f"🚚 הפצות - {date_formatted}"
-    title_cell.font = Font(name='Arial', size=18, bold=True, color='1D2D44')
+    ws_summary.merge_cells('A1:D1')
+    title_cell = ws_summary['A1']
+    title_cell.value = f"הפצות - {date_formatted}"
+    title_cell.font = Font(name='Arial', size=20, bold=True, color='1D2D44')
     title_cell.alignment = Alignment(horizontal='center', vertical='center')
-    ws.row_dimensions[1].height = 35
+    ws_summary.row_dimensions[1].height = 40
 
-    # Headers
-    headers = ['#', 'נהג', 'לקוח', 'עיר', 'מק"ט', 'מוצר', 'משטחים', 'הזמנה']
-    col_widths = [5, 15, 30, 15, 12, 35, 10, 12]
+    # Headers for summary - WIDER columns, TALLER rows
+    summary_headers = ['נהג', 'לקוח', 'עיר', 'משטחים']
+    summary_widths = [18, 45, 22, 14]  # Wider columns
 
-    for col_idx, (header, width) in enumerate(zip(headers, col_widths), 1):
-        cell = ws.cell(row=3, column=col_idx, value=header)
-        cell.font = header_font
+    for col_idx, (header, width) in enumerate(zip(summary_headers, summary_widths), 1):
+        cell = ws_summary.cell(row=3, column=col_idx, value=header)
+        cell.font = Font(name='Arial', size=14, bold=True, color='FFFFFF')  # Bigger font
         cell.fill = header_fill
-        cell.alignment = header_alignment
+        cell.alignment = center_alignment
         cell.border = thin_border
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
+        ws_summary.column_dimensions[get_column_letter(col_idx)].width = width
 
-    ws.row_dimensions[3].height = 25
+    ws_summary.row_dimensions[3].height = 35  # Taller header
 
-    # Group by driver
-    grouped = group_by_driver(deliveries)
+    # Group by driver and customer
+    grouped = group_by_driver_and_customer(deliveries)
 
     row = 4
     total_pallets = 0
-    total_stops = 0
+    total_customers = 0
 
-    for driver, items in grouped.items():
-        # Get driver color
+    for driver, customers in grouped.items():
         driver_color = DRIVER_COLORS.get(driver, DRIVER_COLORS["default"])
         driver_fill = PatternFill(start_color=driver_color, end_color=driver_color, fill_type='solid')
 
         driver_pallets = 0
+        driver_customers = 0
 
-        for idx, item in enumerate(items, 1):
-            total_stops += 1
-            pallets = item.get("pallets", 0)
-            driver_pallets += pallets
-            total_pallets += pallets
+        for customer, items in customers.items():
+            total_customers += 1
+            driver_customers += 1
 
+            customer_pallets = sum(item.get("pallets", 0) for item in items)
+            driver_pallets += customer_pallets
+            total_pallets += customer_pallets
+
+            city = items[0].get("city", "") if items else ""
+
+            # Summary row: Driver | Customer | City | Pallets - ALL CENTERED, BIGGER FONT
             row_data = [
-                idx,
-                item.get("driver", ""),
-                item.get("customer", ""),
-                item.get("city", ""),
-                item.get("sku", ""),
-                item.get("description", ""),
-                pallets if pallets > 0 else "",
-                item.get("order", ""),
+                driver if driver_customers == 1 else "",
+                customer,
+                city,
+                int(customer_pallets) if customer_pallets > 0 else ""
             ]
 
             for col_idx, value in enumerate(row_data, 1):
-                cell = ws.cell(row=row, column=col_idx, value=value)
-                cell.font = cell_font
-                cell.fill = driver_fill
-                cell.border = thin_border
-                if col_idx in [1, 7]:  # Number columns
-                    cell.alignment = center_alignment
+                cell = ws_summary.cell(row=row, column=col_idx, value=value)
+                if col_idx == 4:  # Pallets column - red and bold
+                    cell.font = Font(name='Arial', size=14, bold=True, color='E63946')
                 else:
-                    cell.alignment = cell_alignment
+                    cell.font = Font(name='Arial', size=12, bold=True)  # Bigger, bold
+                cell.fill = driver_fill
+                cell.alignment = center_alignment  # ALL CENTERED
+                cell.border = thin_border
 
-            ws.row_dimensions[row].height = 22
+            ws_summary.row_dimensions[row].height = 32  # Taller rows
             row += 1
 
-        # Driver subtotal row
+        # Driver subtotal - CENTERED, BIGGER
         subtotal_fill = PatternFill(start_color='E0E0E0', end_color='E0E0E0', fill_type='solid')
-        ws.merge_cells(f'A{row}:F{row}')
-        subtotal_cell = ws.cell(row=row, column=1, value=f"סה\"כ {driver}: {len(items)} שורות")
-        subtotal_cell.font = Font(name='Arial', size=11, bold=True)
+        ws_summary.merge_cells(f'A{row}:C{row}')
+        subtotal_cell = ws_summary.cell(row=row, column=1, value=f"סה\"כ {driver}: {driver_customers} לקוחות")
+        subtotal_cell.font = Font(name='Arial', size=13, bold=True)
         subtotal_cell.fill = subtotal_fill
-        subtotal_cell.alignment = Alignment(horizontal='right', vertical='center')
+        subtotal_cell.alignment = center_alignment  # CENTERED
         subtotal_cell.border = thin_border
 
-        pallets_cell = ws.cell(row=row, column=7, value=driver_pallets if driver_pallets > 0 else "")
-        pallets_cell.font = Font(name='Arial', size=11, bold=True)
+        pallets_cell = ws_summary.cell(row=row, column=4, value=int(driver_pallets) if driver_pallets > 0 else "")
+        pallets_cell.font = Font(name='Arial', size=14, bold=True, color='E63946')
         pallets_cell.fill = subtotal_fill
         pallets_cell.alignment = center_alignment
         pallets_cell.border = thin_border
 
-        ws.cell(row=row, column=8, value="").border = thin_border
-        ws.cell(row=row, column=8).fill = subtotal_fill
+        ws_summary.row_dimensions[row].height = 35  # Taller
+        row += 2
 
-        ws.row_dimensions[row].height = 25
-        row += 2  # Empty row between drivers
-
-    # Grand total
+    # Grand total - BIGGER
     row += 1
-    ws.merge_cells(f'A{row}:F{row}')
-    total_cell = ws.cell(row=row, column=1, value=f"סה\"כ: {total_stops} שורות | {len(grouped)} נהגים")
-    total_cell.font = Font(name='Arial', size=14, bold=True, color='1D2D44')
-    total_cell.alignment = Alignment(horizontal='center', vertical='center')
+    ws_summary.merge_cells(f'A{row}:C{row}')
+    total_cell = ws_summary.cell(row=row, column=1, value=f"סה\"כ: {total_customers} לקוחות | {len(grouped)} נהגים")
+    total_cell.font = Font(name='Arial', size=16, bold=True, color='1D2D44')
+    total_cell.alignment = center_alignment
 
-    grand_pallets = ws.cell(row=row, column=7, value=total_pallets if total_pallets > 0 else "")
-    grand_pallets.font = Font(name='Arial', size=14, bold=True, color='E63946')
+    grand_pallets = ws_summary.cell(row=row, column=4, value=int(total_pallets) if total_pallets > 0 else "")
+    grand_pallets.font = Font(name='Arial', size=18, bold=True, color='E63946')
     grand_pallets.alignment = center_alignment
 
-    ws.row_dimensions[row].height = 30
+    ws_summary.row_dimensions[row].height = 45  # Taller
+
+    # ============================================
+    # SHEET 2: DETAILS (פירוט) - Full Breakdown
+    # ============================================
+    ws_details = wb.create_sheet(title="פירוט")
+    ws_details.sheet_view.rightToLeft = True
+
+    # Title
+    ws_details.merge_cells('A1:G1')
+    title_cell = ws_details['A1']
+    title_cell.value = f"פירוט הפצות - {date_formatted}"
+    title_cell.font = Font(name='Arial', size=18, bold=True, color='1D2D44')
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    ws_details.row_dimensions[1].height = 35
+
+    # Headers for details
+    detail_headers = ['נהג', 'לקוח', 'עיר', 'מק"ט', 'מוצר', 'כמות', 'הזמנה']
+    detail_widths = [12, 28, 14, 12, 40, 8, 12]
+
+    for col_idx, (header, width) in enumerate(zip(detail_headers, detail_widths), 1):
+        cell = ws_details.cell(row=3, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+        ws_details.column_dimensions[get_column_letter(col_idx)].width = width
+
+    ws_details.row_dimensions[3].height = 25
+
+    # Write all detail rows
+    row = 4
+    for driver, customers in grouped.items():
+        driver_color = DRIVER_COLORS.get(driver, DRIVER_COLORS["default"])
+        driver_fill = PatternFill(start_color=driver_color, end_color=driver_color, fill_type='solid')
+
+        first_driver_row = True
+        for customer, items in customers.items():
+            first_customer_row = True
+            city = items[0].get("city", "") if items else ""
+
+            for item in items:
+                desc = item.get("description", "")
+                if len(desc) > 50:
+                    desc = desc[:47] + "..."
+
+                row_data = [
+                    driver if first_driver_row else "",
+                    customer if first_customer_row else "",
+                    city if first_customer_row else "",
+                    item.get("sku", ""),
+                    desc,
+                    int(item.get("pallets", 0)) if item.get("pallets", 0) > 0 else "",
+                    item.get("order", "")
+                ]
+
+                for col_idx, value in enumerate(row_data, 1):
+                    cell = ws_details.cell(row=row, column=col_idx, value=value)
+                    cell.font = Font(name='Arial', size=10)
+                    cell.fill = driver_fill
+                    cell.alignment = center_alignment if col_idx == 6 else center_alignment
+                    cell.border = thin_border
+
+                ws_details.row_dimensions[row].height = 20
+                row += 1
+                first_driver_row = False
+                first_customer_row = False
 
     # Save to bytes
     output = BytesIO()
