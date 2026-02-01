@@ -348,9 +348,9 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
     title_cell.alignment = Alignment(horizontal='center', vertical='center')
     ws_summary.row_dimensions[1].height = 40
 
-    # Headers for summary - WIDER columns, TALLER rows
-    summary_headers = ['נהג', 'לקוח', 'עיר', 'משטחים']
-    summary_widths = [18, 45, 22, 14]  # Wider columns
+    # Headers for summary - REVERSED for RTL display: משטחים | עיר | לקוח | נהג
+    summary_headers = ['משטחים', 'עיר', 'לקוח', 'נהג']
+    summary_widths = [14, 22, 45, 18]  # Reversed widths
 
     for col_idx, (header, width) in enumerate(zip(summary_headers, summary_widths), 1):
         cell = ws_summary.cell(row=3, column=col_idx, value=header)
@@ -386,17 +386,17 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
 
             city = items[0].get("city", "") if items else ""
 
-            # Summary row: Driver | Customer | City | Pallets - ALL CENTERED, BIGGER FONT
+            # Summary row: REVERSED - Pallets | City | Customer | Driver
             row_data = [
-                driver if driver_customers == 1 else "",
-                customer,
+                int(customer_pallets) if customer_pallets > 0 else "",
                 city,
-                int(customer_pallets) if customer_pallets > 0 else ""
+                customer,
+                driver if driver_customers == 1 else ""
             ]
 
             for col_idx, value in enumerate(row_data, 1):
                 cell = ws_summary.cell(row=row, column=col_idx, value=value)
-                if col_idx == 4:  # Pallets column - red and bold
+                if col_idx == 1:  # Pallets column (now first) - red and bold
                     cell.font = Font(name='Arial', size=14, bold=True, color='E63946')
                 else:
                     cell.font = Font(name='Arial', size=12, bold=True)  # Bigger, bold
@@ -407,36 +407,42 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
             ws_summary.row_dimensions[row].height = 32  # Taller rows
             row += 1
 
-        # Driver subtotal - CENTERED, BIGGER
+        # Driver subtotal - REVERSED columns
         subtotal_fill = PatternFill(start_color='E0E0E0', end_color='E0E0E0', fill_type='solid')
-        ws_summary.merge_cells(f'A{row}:C{row}')
-        subtotal_cell = ws_summary.cell(row=row, column=1, value=f"סה\"כ {driver}: {driver_customers} לקוחות")
-        subtotal_cell.font = Font(name='Arial', size=13, bold=True)
-        subtotal_cell.fill = subtotal_fill
-        subtotal_cell.alignment = center_alignment  # CENTERED
-        subtotal_cell.border = thin_border
 
-        pallets_cell = ws_summary.cell(row=row, column=4, value=int(driver_pallets) if driver_pallets > 0 else "")
+        # Pallets in column A (first)
+        pallets_cell = ws_summary.cell(row=row, column=1, value=int(driver_pallets) if driver_pallets > 0 else "")
         pallets_cell.font = Font(name='Arial', size=14, bold=True, color='E63946')
         pallets_cell.fill = subtotal_fill
         pallets_cell.alignment = center_alignment
         pallets_cell.border = thin_border
 
-        ws_summary.row_dimensions[row].height = 35  # Taller
+        # Merge B-D for text
+        ws_summary.merge_cells(f'B{row}:D{row}')
+        subtotal_cell = ws_summary.cell(row=row, column=2, value=f"סה\"כ {driver}: {driver_customers} לקוחות")
+        subtotal_cell.font = Font(name='Arial', size=13, bold=True)
+        subtotal_cell.fill = subtotal_fill
+        subtotal_cell.alignment = center_alignment
+        subtotal_cell.border = thin_border
+
+        ws_summary.row_dimensions[row].height = 35
         row += 2
 
-    # Grand total - BIGGER
+    # Grand total - REVERSED columns
     row += 1
-    ws_summary.merge_cells(f'A{row}:C{row}')
-    total_cell = ws_summary.cell(row=row, column=1, value=f"סה\"כ: {total_customers} לקוחות | {len(grouped)} נהגים")
-    total_cell.font = Font(name='Arial', size=16, bold=True, color='1D2D44')
-    total_cell.alignment = center_alignment
 
-    grand_pallets = ws_summary.cell(row=row, column=4, value=int(total_pallets) if total_pallets > 0 else "")
+    # Pallets in column A (first)
+    grand_pallets = ws_summary.cell(row=row, column=1, value=int(total_pallets) if total_pallets > 0 else "")
     grand_pallets.font = Font(name='Arial', size=18, bold=True, color='E63946')
     grand_pallets.alignment = center_alignment
 
-    ws_summary.row_dimensions[row].height = 45  # Taller
+    # Merge B-D for text
+    ws_summary.merge_cells(f'B{row}:D{row}')
+    total_cell = ws_summary.cell(row=row, column=2, value=f"סה\"כ: {total_customers} לקוחות | {len(grouped)} נהגים")
+    total_cell.font = Font(name='Arial', size=16, bold=True, color='1D2D44')
+    total_cell.alignment = center_alignment
+
+    ws_summary.row_dimensions[row].height = 45
 
     # ============================================
     # SHEET 2: DETAILS (פירוט) - Full Breakdown
