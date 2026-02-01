@@ -1,0 +1,34 @@
+name: Morning Email Digest
+
+on:
+  schedule:
+    # 06:05 UTC = 08:05 Israel time (winter) / 09:05 Israel time (summer)
+    - cron: '5 6 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run email digest
+        env:
+          MS365_CLIENT_ID: ${{ secrets.MS365_CLIENT_ID }}
+          MS365_CLIENT_SECRET: ${{ secrets.MS365_CLIENT_SECRET }}
+          MS365_TENANT_ID: ${{ secrets.MS365_TENANT_ID }}
+          MS365_USER_EMAIL: ${{ secrets.MS365_USER_EMAIL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TIMELINEAI_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+        run: python email_digest.py
