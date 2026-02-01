@@ -1,0 +1,52 @@
+name: Daily Deliveries Report
+
+on:
+  schedule:
+    # Run at 04:30 UTC = 07:30 Israel Winter Time (06:30 Summer Time)
+    # Sunday to Thursday (0-4 in cron = Sunday to Thursday)
+    - cron: '30 4 * * 0-4'
+
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Target date (YYYY-MM-DD), leave empty for today'
+        required: false
+        default: ''
+
+env:
+  MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+  TIMELINES_API_KEY: ${{ secrets.TIMELINES_API_KEY }}
+
+jobs:
+  send-deliveries-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests openpyxl
+
+      - name: Run deliveries report
+        run: |
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            python scripts/daily_deliveries_report.py "${{ github.event.inputs.target_date }}"
+          else
+            python scripts/daily_deliveries_report.py
+          fi
+
+      - name: Upload Excel artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deliveries-report-${{ github.run_id }}
+          path: "*.xlsx"
+          retention-days: 30
+          if-no-files-found: ignore
