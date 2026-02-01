@@ -6,15 +6,15 @@ Sends a daily summary of deliveries to WhatsApp every morning at 07:30.
 Groups deliveries by driver and creates a styled Excel file.
 
 Board: הפצה (ID: 5089475109)
+Filters by: date4 (ת. הפצה) = today's date
 """
 
 import os
 import sys
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import BytesIO
-import tempfile
 
 # Excel dependencies
 try:
@@ -37,34 +37,45 @@ WHATSAPP_PHONE = "972528012869"  # Ohad's number
 # Board configuration
 BOARD_ID = "5089475109"  # הפצה board
 
-# Column IDs from Monday.com
+# Column IDs (verified from API)
 COLUMNS = {
-    "date": "date4",           # ת. הפצה
-    "driver": "color_mkz4z0q4",  # נהג
-    "customer": "text_mkz43a4j",  # לקוח
-    "city": "text_mkz4zrrm",      # עיר
-    "sku": "text_mkz4pcnj",       # מק"ט
-    "description": "text_mkz4c904",  # תיאור
-    "pallets": "numeric_mkz4s8sc",   # משטחים
-    "order": "text_mkz4n5dn",        # הזמנה
+    "date": "date4",               # ת. הפצה
+    "driver": "color_mkz4z0q4",    # נהג (status column)
+    "customer": "text_mkz43a4j",   # לקוח
+    "city": "text_mkz4zrrm",       # עיר
+    "sku": "text_mkz4pcnj",        # מק"ט
+    "description": "text_mkz4c904", # תאור מוצר
+    "pallets": "numeric_mkz4s8sc", # משטחים
+    "order": "text_mkz4n5dn",      # הזמנת לקוח
+    "broadcast": "color_mkz4m0mx", # שידור
 }
 
-# Driver color labels (from Monday.com status column)
+# Driver labels from Monday.com settings (index -> name)
 DRIVER_LABELS = {
     0: "שי",
     1: "אורי",
-    2: "נהג 3",
-    3: "נהג 4",
-    # Add more as needed
+    2: "נאדר",
+    3: "שפע תובלה",
+    4: "אורי נגלה 2",
+    6: "הפצה ביג לוג",
+    7: "שי נגלה 2",
+    8: "איסוף עצמי",
+    9: "סוכן",
+    10: "ישראל",
+    11: "BL",
 }
 
 # Excel styling colors per driver
 DRIVER_COLORS = {
-    "שי": "E8F4FD",      # Light blue
-    "אורי": "FFF3E8",    # Light orange
-    "נהג 3": "E8FDE8",   # Light green
-    "נהג 4": "F8E8FD",   # Light purple
-    "אחר": "F5F5F5",     # Light gray
+    "שי": "C8E6C9",           # Light green
+    "אורי": "FFECB3",         # Light amber
+    "נאדר": "B3E5FC",         # Light blue
+    "שפע תובלה": "E1BEE7",    # Light purple
+    "הפצה ביג לוג": "FFCDD2", # Light red
+    "איסוף עצמי": "F5F5F5",   # Light gray
+    "סוכן": "D7CCC8",         # Light brown
+    "ישראל": "B2DFDB",        # Light teal
+    "default": "EEEEEE",      # Default gray
 }
 
 
@@ -77,6 +88,7 @@ def log(message):
 def query_monday_deliveries(target_date: str) -> list:
     """
     Query Monday.com for deliveries on target date.
+    Uses items_page_by_column_values to filter by date.
 
     Args:
         target_date: Date in YYYY-MM-DD format
@@ -88,7 +100,75 @@ def query_monday_deliveries(target_date: str) -> list:
         log("ERROR: MONDAY_API_TOKEN not set")
         return []
 
-    # GraphQL query to get items with their column values
+    # Query using items_page_by_column_values for date filtering
+    query = """
+    query ($boardId: ID!, $columnId: String!, $columnValue: String!) {
+        items_page_by_column_values(
+            board_id: $boardId,
+            columns: [{column_id: $columnId, column_values: [$columnValue]}],
+            limit: 500
+        ) {
+            items {
+                id
+                name
+                column_values {
+                    id
+                    text
+                    value
+                }
+            }
+        }
+    }
+    """
+
+    headers = {
+        "Authorization": MONDAY_API_TOKEN,
+        "Content-Type": "application/json",
+        "API-Version": "2024-10"
+    }
+
+    payload = {
+        "query": query,
+        "variables": {
+            "boardId": BOARD_ID,
+            "columnId": COLUMNS["date"],
+            "columnValue": target_date
+        }
+    }
+
+    try:
+        log(f"Querying Monday.com for deliveries on {target_date}...")
+        response = requests.post(MONDAY_API_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            log(f"Monday.com API errors: {data['errors']}")
+            # Fallback to regular query
+            return query_monday_deliveries_fallback(target_date)
+
+        items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
+        log(f"Found {len(items)} deliveries for {target_date}")
+
+        deliveries = []
+        for item in items:
+            columns = {cv["id"]: cv for cv in item.get("column_values", [])}
+            deliveries.append(parse_delivery_item(item, columns))
+
+        return deliveries
+
+    except requests.exceptions.RequestException as e:
+        log(f"ERROR: Monday.com API request failed: {e}")
+        return query_monday_deliveries_fallback(target_date)
+    except Exception as e:
+        log(f"ERROR: Unexpected error: {e}")
+        return []
+
+
+def query_monday_deliveries_fallback(target_date: str) -> list:
+    """
+    Fallback query method - gets all items and filters locally.
+    """
     query = """
     query ($boardId: [ID!]!) {
         boards(ids: $boardId) {
@@ -110,7 +190,7 @@ def query_monday_deliveries(target_date: str) -> list:
     headers = {
         "Authorization": MONDAY_API_TOKEN,
         "Content-Type": "application/json",
-        "API-Version": "2024-01"
+        "API-Version": "2024-10"
     }
 
     payload = {
@@ -119,71 +199,59 @@ def query_monday_deliveries(target_date: str) -> list:
     }
 
     try:
-        log(f"Querying Monday.com board {BOARD_ID} for date {target_date}...")
+        log(f"Using fallback query for {target_date}...")
         response = requests.post(MONDAY_API_URL, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
 
-        if "errors" in data:
-            log(f"Monday.com API errors: {data['errors']}")
-            return []
-
         items = data.get("data", {}).get("boards", [{}])[0].get("items_page", {}).get("items", [])
-        log(f"Found {len(items)} total items in board")
+        log(f"Retrieved {len(items)} total items")
 
-        # Filter by date
         deliveries = []
         for item in items:
             columns = {cv["id"]: cv for cv in item.get("column_values", [])}
 
-            # Check if delivery date matches
+            # Check date column
             date_col = columns.get(COLUMNS["date"], {})
-            item_date = date_col.get("text", "")
+            date_value = date_col.get("value", "")
 
-            # Monday.com returns dates in various formats, normalize
-            if item_date:
-                # Try to parse and compare
+            # Parse JSON value to extract date
+            if date_value:
                 try:
-                    # Handle DD/MM/YYYY or YYYY-MM-DD
-                    if "/" in item_date:
-                        parsed_date = datetime.strptime(item_date, "%Y-%m-%d").strftime("%Y-%m-%d")
-                    else:
-                        parsed_date = item_date[:10]  # Take first 10 chars
-
-                    if parsed_date == target_date:
+                    date_data = json.loads(date_value)
+                    item_date = date_data.get("date", "")
+                    if item_date == target_date:
                         deliveries.append(parse_delivery_item(item, columns))
-                except Exception as e:
-                    # If date parsing fails, do string comparison
-                    if target_date in str(item_date):
+                except (json.JSONDecodeError, TypeError):
+                    # Try text match
+                    if target_date in str(date_col.get("text", "")):
                         deliveries.append(parse_delivery_item(item, columns))
 
         log(f"Found {len(deliveries)} deliveries for {target_date}")
         return deliveries
 
-    except requests.exceptions.RequestException as e:
-        log(f"ERROR: Monday.com API request failed: {e}")
-        return []
     except Exception as e:
-        log(f"ERROR: Unexpected error: {e}")
+        log(f"ERROR: Fallback query failed: {e}")
         return []
 
 
 def parse_delivery_item(item: dict, columns: dict) -> dict:
     """Parse a Monday.com item into a delivery dict"""
 
-    # Get driver from status/color column
+    # Get driver from status column
     driver_col = columns.get(COLUMNS["driver"], {})
-    driver_value = driver_col.get("value", "{}")
     driver_text = driver_col.get("text", "")
+    driver_value = driver_col.get("value", "{}")
 
-    # Try to parse driver from value JSON (index) or text
+    # Parse driver index from JSON value
     driver = driver_text or "לא משויך"
     try:
         if driver_value and driver_value != "{}":
             driver_data = json.loads(driver_value)
             if "index" in driver_data:
-                driver = DRIVER_LABELS.get(driver_data["index"], driver_text or "לא משויך")
-    except:
+                idx = driver_data["index"]
+                driver = DRIVER_LABELS.get(idx, driver_text or f"נהג {idx}")
+    except (json.JSONDecodeError, TypeError):
         pass
 
     # Get pallets (numeric)
@@ -191,14 +259,14 @@ def parse_delivery_item(item: dict, columns: dict) -> dict:
     pallets_text = pallets_col.get("text", "0")
     try:
         pallets = float(pallets_text) if pallets_text else 0
-    except:
+    except (ValueError, TypeError):
         pallets = 0
 
     return {
         "id": item.get("id"),
         "name": item.get("name", ""),
         "driver": driver,
-        "customer": columns.get(COLUMNS["customer"], {}).get("text", ""),
+        "customer": columns.get(COLUMNS["customer"], {}).get("text", "") or item.get("name", ""),
         "city": columns.get(COLUMNS["city"], {}).get("text", ""),
         "sku": columns.get(COLUMNS["sku"], {}).get("text", ""),
         "description": columns.get(COLUMNS["description"], {}).get("text", ""),
@@ -208,14 +276,14 @@ def parse_delivery_item(item: dict, columns: dict) -> dict:
 
 
 def group_by_driver(deliveries: list) -> dict:
-    """Group deliveries by driver"""
+    """Group deliveries by driver, sorted alphabetically"""
     grouped = {}
     for d in deliveries:
         driver = d.get("driver", "לא משויך")
         if driver not in grouped:
             grouped[driver] = []
         grouped[driver].append(d)
-    return grouped
+    return dict(sorted(grouped.items()))
 
 
 def create_excel_report(deliveries: list, target_date: str) -> bytes:
@@ -233,7 +301,7 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
     ws.sheet_view.rightToLeft = True
 
     # Styles
-    header_font = Font(name='Arial', size=14, bold=True, color='FFFFFF')
+    header_font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
     header_fill = PatternFill(start_color='1D2D44', end_color='1D2D44', fill_type='solid')
     header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
@@ -259,7 +327,7 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
 
     # Headers
     headers = ['#', 'נהג', 'לקוח', 'עיר', 'מק"ט', 'מוצר', 'משטחים', 'הזמנה']
-    col_widths = [5, 12, 25, 15, 12, 30, 10, 12]
+    col_widths = [5, 15, 30, 15, 12, 35, 10, 12]
 
     for col_idx, (header, width) in enumerate(zip(headers, col_widths), 1):
         cell = ws.cell(row=3, column=col_idx, value=header)
@@ -278,12 +346,10 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
     total_pallets = 0
     total_stops = 0
 
-    for driver, items in sorted(grouped.items()):
-        driver_fill = PatternFill(
-            start_color=DRIVER_COLORS.get(driver, DRIVER_COLORS["אחר"]),
-            end_color=DRIVER_COLORS.get(driver, DRIVER_COLORS["אחר"]),
-            fill_type='solid'
-        )
+    for driver, items in grouped.items():
+        # Get driver color
+        driver_color = DRIVER_COLORS.get(driver, DRIVER_COLORS["default"])
+        driver_fill = PatternFill(start_color=driver_color, end_color=driver_color, fill_type='solid')
 
         driver_pallets = 0
 
@@ -300,7 +366,7 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
                 item.get("city", ""),
                 item.get("sku", ""),
                 item.get("description", ""),
-                pallets,
+                pallets if pallets > 0 else "",
                 item.get("order", ""),
             ]
 
@@ -318,19 +384,15 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
             row += 1
 
         # Driver subtotal row
-        subtotal_fill = PatternFill(
-            start_color='E0E0E0',
-            end_color='E0E0E0',
-            fill_type='solid'
-        )
+        subtotal_fill = PatternFill(start_color='E0E0E0', end_color='E0E0E0', fill_type='solid')
         ws.merge_cells(f'A{row}:F{row}')
-        subtotal_cell = ws.cell(row=row, column=1, value=f"סה\"כ {driver}: {len(items)} עצירות")
+        subtotal_cell = ws.cell(row=row, column=1, value=f"סה\"כ {driver}: {len(items)} שורות")
         subtotal_cell.font = Font(name='Arial', size=11, bold=True)
         subtotal_cell.fill = subtotal_fill
         subtotal_cell.alignment = Alignment(horizontal='right', vertical='center')
         subtotal_cell.border = thin_border
 
-        pallets_cell = ws.cell(row=row, column=7, value=driver_pallets)
+        pallets_cell = ws.cell(row=row, column=7, value=driver_pallets if driver_pallets > 0 else "")
         pallets_cell.font = Font(name='Arial', size=11, bold=True)
         pallets_cell.fill = subtotal_fill
         pallets_cell.alignment = center_alignment
@@ -345,11 +407,11 @@ def create_excel_report(deliveries: list, target_date: str) -> bytes:
     # Grand total
     row += 1
     ws.merge_cells(f'A{row}:F{row}')
-    total_cell = ws.cell(row=row, column=1, value=f"סה\"כ כללי: {total_stops} עצירות | {len(grouped)} נהגים")
+    total_cell = ws.cell(row=row, column=1, value=f"סה\"כ: {total_stops} שורות | {len(grouped)} נהגים")
     total_cell.font = Font(name='Arial', size=14, bold=True, color='1D2D44')
     total_cell.alignment = Alignment(horizontal='center', vertical='center')
 
-    grand_pallets = ws.cell(row=row, column=7, value=total_pallets)
+    grand_pallets = ws.cell(row=row, column=7, value=total_pallets if total_pallets > 0 else "")
     grand_pallets.font = Font(name='Arial', size=14, bold=True, color='E63946')
     grand_pallets.alignment = center_alignment
 
@@ -373,32 +435,43 @@ def format_whatsapp_message(deliveries: list, target_date: str) -> str:
 
     lines = [f"🚚 הפצות היום - {date_formatted}", ""]
 
-    total_stops = 0
+    total_rows = 0
     total_pallets = 0
 
-    for driver, items in sorted(grouped.items()):
+    for driver, items in grouped.items():
         driver_pallets = sum(item.get("pallets", 0) for item in items)
-        driver_stops = len(items)
+        driver_rows = len(items)
 
-        total_stops += driver_stops
+        total_rows += driver_rows
         total_pallets += driver_pallets
 
-        lines.append(f"📍 {driver} ({driver_stops} עצירות, {int(driver_pallets)} משטחים):")
+        # Count unique customers
+        customers = set(item.get("customer", "") for item in items if item.get("customer"))
 
-        for item in items[:5]:  # Show first 5
-            customer = item.get("customer", "לקוח")
-            city = item.get("city", "")
-            pallets = int(item.get("pallets", 0))
-            city_str = f" - {city}" if city else ""
-            lines.append(f"  • {customer}{city_str} ({pallets} מש')")
+        pallets_str = f", {int(driver_pallets)} משטחים" if driver_pallets > 0 else ""
+        lines.append(f"📍 {driver} ({len(customers)} לקוחות, {driver_rows} שורות{pallets_str}):")
 
-        if len(items) > 5:
-            lines.append(f"  • ... ועוד {len(items) - 5} עצירות")
+        # Show unique customers with their cities
+        shown_customers = set()
+        for item in items:
+            customer = item.get("customer", "")
+            if customer and customer not in shown_customers and len(shown_customers) < 5:
+                city = item.get("city", "")
+                city_str = f" - {city}" if city else ""
+                # Count pallets for this customer
+                cust_pallets = sum(i.get("pallets", 0) for i in items if i.get("customer") == customer)
+                pallet_str = f" ({int(cust_pallets)} מש')" if cust_pallets > 0 else ""
+                lines.append(f"  • {customer}{city_str}{pallet_str}")
+                shown_customers.add(customer)
+
+        if len(customers) > 5:
+            lines.append(f"  • ... ועוד {len(customers) - 5} לקוחות")
 
         lines.append("")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"סה\"כ: {total_stops} עצירות | {int(total_pallets)} משטחים | {len(grouped)} נהגים")
+    pallets_total = f" | {int(total_pallets)} משטחים" if total_pallets > 0 else ""
+    lines.append(f"סה\"כ: {total_rows} שורות | {len(grouped)} נהגים{pallets_total}")
 
     return "\n".join(lines)
 
