@@ -958,62 +958,100 @@ def create_excel_report(containers, usd_rate):
     return filename
 
 
-def upload_file(filepath):
-    """Upload file to TimelineAI"""
+def upload_file(filepath, retries=3):
+    """Upload file to TimelineAI with retry"""
     url = "https://app.timelines.ai/integrations/api/files_upload"
     headers = {"Authorization": f"Bearer {TIMELINES_API_KEY}"}
-    with open(filepath, 'rb') as f:
-        response = requests.post(url, headers=headers, files={'file': f})
-    if response.status_code == 200:
-        return response.json().get('data', {}).get('uid')
-    print(f"Upload error: {response.status_code}")
+
+    for attempt in range(retries):
+        try:
+            with open(filepath, 'rb') as f:
+                response = requests.post(url, headers=headers, files={'file': f}, timeout=30)
+            if response.status_code == 200:
+                return response.json().get('data', {}).get('uid')
+            print(f"Upload error: {response.status_code}, retry {attempt + 1}/{retries}...")
+        except Exception as e:
+            print(f"Upload exception: {e}, retry {attempt + 1}/{retries}...")
+        time.sleep(3 * (attempt + 1))
+
+    print("Upload failed after all retries")
     return None
 
 
-def send_whatsapp(phone, file_uid, text):
-    """Send WhatsApp message with file"""
+def send_whatsapp(phone, file_uid, text, retries=2):
+    """Send WhatsApp message with file and retry"""
     url = "https://app.timelines.ai/integrations/api/messages"
     headers = {"Authorization": f"Bearer {TIMELINES_API_KEY}", "Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, json={"phone": phone, "file_uid": file_uid, "text": text})
-    return response.status_code == 200
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers,
+                                     json={"phone": phone, "file_uid": file_uid, "text": text},
+                                     timeout=30)
+            if response.status_code == 200:
+                return True
+            print(f"WhatsApp send error {response.status_code} for {phone}, retry {attempt + 1}...")
+        except Exception as e:
+            print(f"WhatsApp exception for {phone}: {e}, retry {attempt + 1}...")
+        time.sleep(3)
+
+    return False
 
 
 def main():
     print("💵 Fetching USD rate...")
     usd_rate = fetch_usd_rate()
     print(f"USD Rate: {usd_rate}")
-    
+
     print("🚢 Fetching Ardo containers from Priority...")
     containers = fetch_containers_from_priority()
-    
+
     if not containers:
         print("No containers found")
         return
-    
+
     print(f"Found {len(containers)} containers")
-    
+
+    # Check shipping cost coverage
+    with_shipping = [c for c in containers if SHIPPING_COSTS.get(c['po'], 0) > 0]
+    without_shipping = [c for c in containers if SHIPPING_COSTS.get(c['po'], 0) == 0]
+    print(f"  Shipping costs: {len(with_shipping)}/{len(containers)} ({len(without_shipping)} missing)")
+    if without_shipping:
+        print(f"  ⚠️ Missing: {', '.join(c['po'] for c in without_shipping)}")
+
     print("📊 Creating Excel with items from Priority...")
     filename = create_excel_report(containers, usd_rate)
     print(f"Created: {filename}")
-    
+
     print("📤 Uploading...")
     file_uid = upload_file(filename)
     if not file_uid:
         print("Upload failed")
         return
-    
+
     print("📱 Sending WhatsApp...")
     today = datetime.now().strftime('%d.%m.%Y')
-    critical = sum(1 for c in containers if calculate_days_in_port(c['eta']) > 30)
-    text = f"🚢 דוח מכולות בכנ\"מ - Gaya Foods\n📅 {today}\n📦 {len(containers)} מכולות"
+    at_port = [c for c in containers if c['status'] == 'כנ"מ ללא BL']
+    on_ship = [c for c in containers if c['status'] == 'באוניה']
+    critical = sum(1 for c in at_port if calculate_days_in_port(c['eta']) > 30)
+    at_port_fob = sum(c['fob_total'] for c in at_port)
+    on_ship_fob = sum(c['fob_total'] for c in on_ship)
+
+    text = f"🚢 דוח מכולות Ardo - {today}\n"
+    text += f"⚓ {len(at_port)} בנמל (${at_port_fob/1000:.0f}K)\n"
+    text += f"🚢 {len(on_ship)} באוניה (${on_ship_fob/1000:.0f}K)\n"
+    text += f"📦 סה\"כ: {len(containers)} מכולות"
     if critical > 0:
-        text += f"\n🔴 {critical} קריטי (>30 יום)"
-    text += "\n\n🤖 עדכון יומי"
-    
+        text += f"\n🔴 {critical} קריטי (>30 יום בנמל!)"
+    text += f"\n💰 הובלה: {len(with_shipping)}/{len(containers)} מעודכנים"
+    if without_shipping:
+        text += f"\n⚠️ חסר הובלה: {', '.join(c['po'] for c in without_shipping)}"
+    text += "\n\n🤖 עדכון יומי אוטומטי"
+
     for r in RECIPIENTS:
         ok = send_whatsapp(r['phone'], file_uid, text)
         print(f"{'✅' if ok else '❌'} {r['name']}: {r['phone']}")
-    
+
     print("\n✅ Done!")
 
 
