@@ -31,6 +31,29 @@ CURRENCIES_BOARD_ID = 1958318760
 # Fixed costs
 PORT_COST_ILS = 1107
 
+# Known shipping costs (updated from historical data)
+SHIPPING_COSTS = {
+    'PO240350': 6643, 'PO240353': 6643,
+    'PO250271': 3228, 'PO250272': 3228,
+    'PO250299': 2724, 'PO250307': 2724,
+    'PO250294': 2724, 'PO250295': 2724, 'PO250296': 2724,
+    'PO250344': 2850,
+    'PO250345': 3178, 'PO250346': 3178, 'PO250342': 3178,
+    'PO250381': 3379,
+    'PO250428': 3934,
+    'PO250471': 4716, 'PO250472': 4716, 'PO250378': 4716, 'PO250387': 4716,
+    'PO250476': 5246, 'PO250477': 5246, 'PO250478': 5246, 'PO250479': 5246, 'PO250483': 5246,
+    'PO250379': 3127, 'PO250388': 3127, 'PO250500': 3127,
+    'PO250501': 4741,
+    'PO250389': 3127, 'PO250502': 3228, 'PO250484': 3228,
+}
+
+# Default units per carton by SKU prefix
+UNITS_PER_CARTON_DEFAULTS = {
+    'TUPP05': 120,  # Small pouches 1/120
+}
+DEFAULT_UNITS_PER_CARTON = 12
+
 # WhatsApp recipients
 RECIPIENTS = [
     {'name': 'אוהד', 'phone': '972528012869'},
@@ -237,12 +260,14 @@ def fetch_items_from_priority(po_number):
             list_price = item.get('PRICE', 0)
             net_price = list_price * (1 - discount_pct)
 
+            sku = item.get('PARTNAME', '')
             items.append({
-                'sku': item.get('PARTNAME', ''),
+                'sku': sku,
                 'description': item.get('PDES', ''),
                 'quantity': int(qty),
                 'unit': 'קרט',
-                'unit_price': round(net_price, 2)  # Net price after discount
+                'unit_price': round(net_price, 2),  # Net price after discount
+                'units_per_carton': UNITS_PER_CARTON_DEFAULTS.get(sku, DEFAULT_UNITS_PER_CARTON)
             })
 
     return items
@@ -524,16 +549,21 @@ def create_container_sheet(wb, container, items, usd_rate):
     ws.cell(row=row, column=8, value="מכס:").font = LABEL_FONT
     ws.cell(row=row, column=9, value="0%").font = DATA_FONT
     
-    # Shipping input
+    # Shipping input - pre-fill from known costs
     row += 1
     shipping_row = row
+    known_shipping = SHIPPING_COSTS.get(container['po'], 0)
     ws.cell(row=row, column=2, value="👇 עלות הובלה סה\"כ ($):").font = Font(name='Arial', size=14, bold=True, color="C0392B")
-    shipping_cell = ws.cell(row=row, column=3, value="")
+    shipping_cell = ws.cell(row=row, column=3, value=known_shipping if known_shipping > 0 else "")
     shipping_cell.fill = INPUT_FILL
     shipping_cell.border = medium_border
     shipping_cell.font = INPUT_FONT
+    shipping_cell.number_format = '$#,##0'
     shipping_cell.alignment = Alignment(horizontal='center')
-    ws.cell(row=row, column=5, value="← מלא כאן").font = Font(size=12, italic=True, color="888888")
+    if known_shipping > 0:
+        ws.cell(row=row, column=5, value="✅ מעודכן").font = Font(size=12, italic=True, color="27AE60")
+    else:
+        ws.cell(row=row, column=5, value="← מלא כאן").font = Font(size=12, italic=True, color="888888")
     
     # Items table
     row += 2
@@ -659,20 +689,270 @@ def create_container_sheet(wb, container, items, usd_rate):
     ws[f'B{row}'].alignment = Alignment(horizontal='center')
 
 
+def create_all_items_sheet(wb, containers_with_items, usd_rate):
+    """Create consolidated sheet with all items from all containers, sorted by ETA"""
+    ws = wb.create_sheet(title="כל המק\"טים", index=1)  # Insert after summary
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_properties.tabColor = "FF0000"  # RED tab
+
+    # Column widths - 14 columns now
+    widths = [4, 12, 14, 14, 8, 8, 35, 12, 14, 14, 12, 12, 14, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Title
+    ws.merge_cells('A2:N2')
+    ws['A2'] = "📦 כל המק\"טים - ממוין לפי תאריך הגעה"
+    ws['A2'].font = TITLE_FONT
+    ws['A2'].alignment = Alignment(horizontal='center')
+
+    ws.merge_cells('A3:N3')
+    ws['A3'] = f"📅 {datetime.now().strftime('%d.%m.%Y')} | 💵 שער: {usd_rate} | עלויות הובלה מעודכנות"
+    ws['A3'].font = Font(size=12, color="7F8C8D")
+    ws['A3'].alignment = Alignment(horizontal='center')
+
+    # Flatten and sort all items by ETA
+    all_items = []
+    for container, items in containers_with_items:
+        total_units_in_container = sum(item['quantity'] for item in items if item['quantity'] > 0)
+        shipping_cost = SHIPPING_COSTS.get(container['po'], 0)
+        for item in items:
+            if item['quantity'] <= 0:
+                continue
+            units_per_carton = item.get('units_per_carton', DEFAULT_UNITS_PER_CARTON)
+            all_items.append({
+                'po': container['po'],
+                'eta': container['eta'],
+                'status': container['status'],
+                'container_fob': container['fob_total'],
+                'total_units_in_container': total_units_in_container,
+                'shipping_cost': shipping_cost,
+                'units_per_carton': units_per_carton,
+                **item
+            })
+
+    # Sort by ETA (earliest first), then by PO
+    all_items.sort(key=lambda x: (x['eta'] or '9999', x['po']))
+
+    # Headers row - 14 columns with units per carton
+    row = 5
+    headers = ["#", "מק\"ט", "מספר PO", "תאריך כניסה", "כמות", "יח'/קרט", "תיאור",
+               "FOB/יח' $", "FOB סה\"כ $", "עלות הובלה",
+               "הובלה/יח' $", "נמל/יח' ₪", "עלות נחיתה/קרט ₪", "עלות סופית ליחידה"]
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[row].height = 45
+
+    # Track which POs we've already added shipping input for
+    po_shipping_cells = {}
+
+    row += 1
+    first_data_row = row
+
+    for i, item in enumerate(all_items, 1):
+        fob_per_unit = item['unit_price']
+        fob_total = item['quantity'] * fob_per_unit
+        total_units = item['total_units_in_container'] or 1
+        shipping_cost = item.get('shipping_cost', 0)
+        units_per_carton = item.get('units_per_carton', DEFAULT_UNITS_PER_CARTON)
+
+        # Format ETA
+        eta_fmt = ''
+        if item['eta']:
+            try:
+                eta_fmt = datetime.strptime(item['eta'], '%Y-%m-%d').strftime('%d.%m.%y')
+            except:
+                eta_fmt = item['eta']
+
+        # Row fill based on status
+        if item['status'] == 'כנ"מ ללא BL':
+            row_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
+        else:
+            row_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+
+        # Column 1: #
+        ws.cell(row=row, column=1, value=i).font = DATA_FONT
+        ws.cell(row=row, column=1).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=1).border = thin_border
+
+        # Column 2: SKU
+        ws.cell(row=row, column=2, value=item['sku']).font = Font(name='Arial', size=14, bold=True)
+        ws.cell(row=row, column=2).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=2).border = thin_border
+
+        # Column 3: PO
+        ws.cell(row=row, column=3, value=item['po']).font = DATA_FONT
+        ws.cell(row=row, column=3).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=3).border = thin_border
+
+        # Column 4: ETA
+        cell = ws.cell(row=row, column=4, value=eta_fmt or '-')
+        cell.font = DATA_FONT
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+        cell.fill = row_fill
+
+        # Column 5: Quantity
+        ws.cell(row=row, column=5, value=item['quantity']).font = DATA_FONT
+        ws.cell(row=row, column=5).number_format = '#,##0'
+        ws.cell(row=row, column=5).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=5).border = thin_border
+
+        # Column 6: Units per carton
+        ws.cell(row=row, column=6, value=units_per_carton).font = DATA_FONT
+        ws.cell(row=row, column=6).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=6).border = thin_border
+
+        # Column 7: Description
+        desc = item['description'][:35] if item['description'] else ''
+        ws.cell(row=row, column=7, value=desc).font = DATA_FONT
+        ws.cell(row=row, column=7).alignment = Alignment(horizontal='right')
+        ws.cell(row=row, column=7).border = thin_border
+
+        # Column 8: FOB per carton
+        ws.cell(row=row, column=8, value=fob_per_unit).font = DATA_FONT
+        ws.cell(row=row, column=8).number_format = '$#,##0.00'
+        ws.cell(row=row, column=8).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=8).border = thin_border
+
+        # Column 9: FOB total
+        ws.cell(row=row, column=9, value=fob_total).font = DATA_FONT
+        ws.cell(row=row, column=9).number_format = '$#,##0'
+        ws.cell(row=row, column=9).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=9).border = thin_border
+
+        # Column 10: Shipping cost (yellow input, pre-filled if known)
+        if item['po'] not in po_shipping_cells:
+            cell = ws.cell(row=row, column=10, value=shipping_cost if shipping_cost > 0 else "")
+            cell.fill = INPUT_FILL
+            cell.border = medium_border
+            cell.font = INPUT_FONT
+            cell.number_format = '$#,##0'
+            cell.alignment = Alignment(horizontal='center')
+            po_shipping_cells[item['po']] = f"$J${row}"
+        else:
+            cell = ws.cell(row=row, column=10, value=f"={po_shipping_cells[item['po']]}")
+            cell.fill = PatternFill(start_color="FFFDE7", end_color="FFFDE7", fill_type="solid")
+            cell.border = thin_border
+            cell.font = DATA_FONT
+            cell.number_format = '$#,##0'
+            cell.alignment = Alignment(horizontal='center')
+
+        shipping_ref = po_shipping_cells[item['po']]
+
+        # Column 11: Shipping per carton
+        ship_formula = f'=IF({shipping_ref}="","",{shipping_ref}/{total_units})'
+        cell = ws.cell(row=row, column=11, value=ship_formula)
+        cell.font = CALC_FONT
+        cell.fill = CALC_FILL
+        cell.number_format = '$#,##0.00'
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+        # Column 12: Port per carton
+        port_per_unit = PORT_COST_ILS / total_units
+        cell = ws.cell(row=row, column=12, value=port_per_unit)
+        cell.font = DATA_FONT
+        cell.fill = CALC_FILL
+        cell.number_format = '₪#,##0.00'
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+        # Column 13: Landing cost per CARTON
+        landing_formula = f'=IF(K{row}="",H{row}*{usd_rate}+L{row},(H{row}+K{row})*{usd_rate}+L{row})'
+        cell = ws.cell(row=row, column=13, value=landing_formula)
+        cell.font = CALC_FONT
+        cell.fill = CALC_FILL
+        cell.number_format = '₪#,##0.00'
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+
+        # Column 14: Final cost per UNIT (divide by units per carton)
+        final_formula = f'=M{row}/F{row}'
+        cell = ws.cell(row=row, column=14, value=final_formula)
+        cell.font = Font(name='Arial', size=14, bold=True, color="27AE60")
+        cell.fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
+        cell.number_format = '₪#,##0.00'
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = medium_border
+
+        ws.row_dimensions[row].height = 28
+        row += 1
+
+    last_data_row = row - 1
+
+    # Totals row
+    ws.merge_cells(f'A{row}:D{row}')
+    ws.cell(row=row, column=1, value="סה\"כ").font = HEADER_FONT
+    ws.cell(row=row, column=1).fill = HEADER_FILL
+    ws.cell(row=row, column=1).alignment = Alignment(horizontal='center')
+    for col in range(1, 5):
+        ws.cell(row=row, column=col).fill = HEADER_FILL
+        ws.cell(row=row, column=col).border = thin_border
+
+    # Sum of quantities
+    cell = ws.cell(row=row, column=5, value=f"=SUM(E{first_data_row}:E{last_data_row})")
+    cell.font = HEADER_FONT
+    cell.fill = HEADER_FILL
+    cell.number_format = '#,##0'
+    cell.alignment = Alignment(horizontal='center')
+    cell.border = thin_border
+
+    for col in [6, 7, 8]:
+        ws.cell(row=row, column=col).fill = HEADER_FILL
+        ws.cell(row=row, column=col).border = thin_border
+
+    # Sum of FOB total
+    cell = ws.cell(row=row, column=9, value=f"=SUM(I{first_data_row}:I{last_data_row})")
+    cell.font = HEADER_FONT
+    cell.fill = HEADER_FILL
+    cell.number_format = '$#,##0'
+    cell.alignment = Alignment(horizontal='center')
+    cell.border = thin_border
+
+    for col in [10, 11, 12, 13, 14]:
+        ws.cell(row=row, column=col).fill = HEADER_FILL
+        ws.cell(row=row, column=col).border = thin_border
+
+    # Legend
+    row += 2
+    ws.merge_cells(f'A{row}:N{row}')
+    ws[f'A{row}'] = "📝 עלות סופית ליחידה = עלות נחיתה לקרטון ÷ יחידות בקרטון | 🟠 כתום = בנמל | 🟢 ירוק = באוניה"
+    ws[f'A{row}'].font = Font(size=11, italic=True, color="666666")
+    ws[f'A{row}'].alignment = Alignment(horizontal='center')
+    ws[f'A{row}'].font = Font(size=11, italic=True, color="666666")
+    ws[f'A{row}'].alignment = Alignment(horizontal='center')
+
+
 def create_excel_report(containers, usd_rate):
-    """Create full Excel with summary + per-container sheets"""
+    """Create full Excel with summary + all items sheet + per-container sheets"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "סיכום מכולות"
-    
+
     create_summary_sheet(ws, containers, usd_rate)
-    
+
+    # Collect all containers with their items
+    containers_with_items = []
     for container in containers:
         print(f"  Fetching items for {container['po']}...")
         items = fetch_items_from_priority(container['po'])
         print(f"    Found {len(items)} items")
+        containers_with_items.append((container, items))
+
+    # Create consolidated "all items" sheet (after summary)
+    print("  Creating consolidated items sheet...")
+    create_all_items_sheet(wb, containers_with_items, usd_rate)
+
+    # Create individual container sheets
+    for container, items in containers_with_items:
         create_container_sheet(wb, container, items, usd_rate)
-    
+
     filename = f"דוח_מכולות_כנמ_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
     wb.save(filename)
     return filename
