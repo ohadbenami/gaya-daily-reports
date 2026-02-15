@@ -1,0 +1,33 @@
+name: Daily Reorder Alerts
+
+on:
+  schedule:
+    # 9:30 Israel time = 7:30 UTC (winter IST) / 6:30 UTC (summer IDT)
+    # Using 6:30 UTC to cover summer time (IDT = UTC+3)
+    # Sunday-Thursday only (0=Sun, 4=Thu)
+    - cron: '30 6 * * 0-4'
+
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  send-alerts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send reorder alerts
+        env:
+          PRIORITY_API_USER: ${{ secrets.PRIORITY_API_USER }}
+          PRIORITY_API_PASS: ${{ secrets.PRIORITY_API_PASS }}
+          TIMELINEAI_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
+        run: python scripts/daily_reorder_alerts.py
