@@ -1,0 +1,25 @@
+name: Pallets Report - Daily
+
+on:
+  schedule:
+    # 16:20 Israel time (UTC+2) = 14:20 UTC
+    - cron: '20 14 * * *'
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send daily pallets report
+        run: python scripts/pallets_report.py daily

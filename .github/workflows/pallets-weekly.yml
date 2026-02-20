@@ -1,0 +1,25 @@
+name: Pallets Report - Weekly (Thursday)
+
+on:
+  schedule:
+    # Every Thursday 14:00 Israel (UTC+2) = 12:00 UTC
+    - cron: '0 12 * * 4'
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send weekly pallets summary
+        run: python scripts/pallets_report.py weekly

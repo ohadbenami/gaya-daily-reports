@@ -1,0 +1,25 @@
+name: Pallets Report - Monthly (1st of month)
+
+on:
+  schedule:
+    # 1st of every month 14:00 Israel (UTC+2) = 12:00 UTC
+    - cron: '0 12 1 * *'
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send monthly pallets summary
+        run: python scripts/pallets_report.py monthly
