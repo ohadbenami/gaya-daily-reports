@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 """
 Monthly Sales Report - Gaya Foods
-- מכירות החודש לפי סוכן (חשבוניות)
-- הזמנות פתוחות לפי סוכן
-- ת.מ שטרם חויבו (90 יום)
-- שליחה לוואטסאפ דרך TimelineAI
+Uses Supabase REST API (anon key) → no DB password needed
 """
 
-import os
 import requests
-import psycopg2
-import psycopg2.extras
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SUPABASE_DB_URL  = os.environ.get('SUPABASE_DB_URL')   # Transaction pooler URL (full)
-TIMELINES_TOKEN  = os.environ.get('TIMELINES_TOKEN', 'f40ecfc9-31e8-4905-a920-b27e5559fabc')
-WHATSAPP_PHONE   = os.environ.get('WHATSAPP_PHONE', '972528012869')
+SUPABASE_URL    = "https://uwfbirjpzzberwrhkson.supabase.co"
+SUPABASE_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3ZmJpcmpwenpiZXJ3cmhrc29uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwNzAzNTAsImV4cCI6MjA3NzY0NjM1MH0.ar3kfCjkVCqsyqx9zBsSbfn2AORxL9Ph7KLkQUjM6-I"
+TIMELINES_TOKEN = "f40ecfc9-31e8-4905-a920-b27e5559fabc"
+WHATSAPP_PHONE  = "972528012869"
 
-if not SUPABASE_DB_URL:
-    raise ValueError("Missing SUPABASE_DB_URL secret. Add it in GitHub Secrets.")
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
+}
 
-# ── Queries ───────────────────────────────────────────────────────────────────
+# ── SQL Queries ───────────────────────────────────────────────────────────────
 SQL_SALES = """
 SELECT c."סוכן", SUM(p."כמות" * p."מחיר ליחידה") AS sum
 FROM "פירוט חשבוניות מרכזות" p
@@ -33,7 +31,7 @@ ORDER BY sum DESC
 """
 
 SQL_ORDERS = """
-SELECT "סוכן", SUM("סכום הזמנה") AS sum, COUNT(*) AS count
+SELECT "סוכן", SUM("סכום הזמנה") AS sum, COUNT(*) AS cnt
 FROM "הזמנות"
 WHERE "סטטוס הזמנה מפריוריטי" NOT IN ('סגורה', 'מבוטלת')
 GROUP BY "סוכן"
@@ -41,7 +39,7 @@ ORDER BY sum DESC
 """
 
 SQL_UNINVOICED = """
-SELECT COUNT(DISTINCT m."תעודת משלוח") AS count, SUM(p."סה\u05bcכ מחיר") AS sum
+SELECT COUNT(DISTINCT m."תעודת משלוח") AS cnt, SUM(p."סה\u05bcכ מחיר") AS sum
 FROM "משלוחים" m
 JOIN "פירוט תעודות משלוח" p ON p."תעודת משלוח מקשרת" = m."תעודת משלוח"
 WHERE m."חויבה" = 'N'
@@ -50,27 +48,31 @@ WHERE m."חויבה" = 'N'
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def fmt(n):
-    """Format number as ₪X,XXX,XXX"""
-    return f"₪{int(round(n)):,}"
+def run_sql(query: str) -> list:
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/execute_sql",
+        headers=HEADERS,
+        json={"query": query.strip()},
+        timeout=30
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
-def hebrew_month(dt):
-    months = {
-        1: 'ינואר', 2: 'פברואר', 3: 'מרץ', 4: 'אפריל',
-        5: 'מאי', 6: 'יוני', 7: 'יולי', 8: 'אוגוסט',
-        9: 'ספטמבר', 10: 'אוקטובר', 11: 'נובמבר', 12: 'דצמבר'
-    }
-    return months[dt.month]
+def fmt(n) -> str:
+    return f"₪{int(round(float(n))):,}"
 
 
-def send_whatsapp(text):
+def hebrew_month(dt: datetime) -> str:
+    months = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני",
+              "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
+    return months[dt.month - 1]
+
+
+def send_whatsapp(text: str):
     resp = requests.post(
         "https://app.timelines.ai/integrations/api/messages",
-        headers={
-            "Authorization": f"Bearer {TIMELINES_TOKEN}",
-            "Content-Type": "application/json"
-        },
+        headers={"Authorization": f"Bearer {TIMELINES_TOKEN}", "Content-Type": "application/json"},
         json={"phone": WHATSAPP_PHONE, "text": text},
         timeout=30
     )
@@ -80,68 +82,38 @@ def send_whatsapp(text):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    now = datetime.now()
+    israel = timezone(timedelta(hours=2))
+    now = datetime.now(israel)
     timestamp = now.strftime("%d.%m.%Y בשעה %H:%M")
     month_name = hebrew_month(now)
     year = now.year
 
-    # Connect via Transaction Pooler (IPv4, works from GitHub Actions)
-    conn = psycopg2.connect(
-        SUPABASE_DB_URL,
-        sslmode="require",
-        options="-c client_encoding=UTF8"
-    )
-    conn.set_client_encoding('UTF8')
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    sales    = run_sql(SQL_SALES)
+    orders   = run_sql(SQL_ORDERS)
+    uninv    = run_sql(SQL_UNINVOICED)
 
-    # Query 1 — Sales
-    cur.execute(SQL_SALES)
-    sales_rows = cur.fetchall()
-    sales_total = sum(r['sum'] for r in sales_rows)
+    sales_total  = sum(float(r.get("sum", 0)) for r in sales)
+    orders_total = sum(float(r.get("sum", 0)) for r in orders)
+    orders_count = sum(int(r.get("cnt", 0)) for r in orders)
+    uni_sum      = float(uninv[0].get("sum", 0)) if uninv else 0
+    uni_count    = int(uninv[0].get("cnt", 0)) if uninv else 0
 
-    # Query 2 — Open orders
-    cur.execute(SQL_ORDERS)
-    orders_rows = cur.fetchall()
-    orders_total = sum(r['sum'] for r in orders_rows)
-    orders_count = sum(r['count'] for r in orders_rows)
+    AGENTS = {"חיים שחרור": "חיים", "אוראל כהן": "אוראל", "פאר מגיד": "פאר", "אוהד": "אוהד"}
+    short = lambda n: AGENTS.get(n, n)
 
-    # Query 3 — Uninvoiced delivery notes
-    cur.execute(SQL_UNINVOICED)
-    uni = cur.fetchone()
-    uni_count = int(uni['count']) if uni['count'] else 0
-    uni_sum = float(uni['sum']) if uni['sum'] else 0
-
-    cur.close()
-    conn.close()
-
-    # ── Build known agents lookup ─────────────────────────────────────────────
-    AGENTS = {'חיים שחרור': 'חיים', 'אוראל כהן': 'אוראל', 'פאר מגיד': 'פאר', 'אוהד': 'אוהד'}
-
-    def agent_short(name):
-        return AGENTS.get(name, name)
-
-    # ── Build WhatsApp message ────────────────────────────────────────────────
     lines = [
         f"📊 *{month_name} {year}*",
         f"_נכון לתאריך {timestamp}_",
         "",
         "━━━━━━━━━━━━━━",
-        "💰 *סה\"כ חשבוניות שיצאו החודש*",
-        f"*{fmt(sales_total)}* סה\"כ",
-    ]
-    for r in sales_rows:
-        lines.append(f"{agent_short(r['סוכן'])} {fmt(r['sum'])}")
-
-    lines += [
+        f'💰 *סה"כ חשבוניות שיצאו החודש*',
+        f'*{fmt(sales_total)}* סה"כ',
+        *[f'{short(r["סוכן"])} {fmt(r["sum"])}' for r in sales],
         "",
         "━━━━━━━━━━━━━━",
         "📋 *הזמנות פתוחות*",
-        f"*{fmt(orders_total)}* סה\"כ | {orders_count} הזמנות",
-    ]
-    for r in orders_rows:
-        lines.append(f"{agent_short(r['סוכן'])} {fmt(r['sum'])}")
-
-    lines += [
+        f'*{fmt(orders_total)}* סה"כ | {orders_count} הזמנות',
+        *[f'{short(r["סוכן"])} {fmt(r["sum"])}' for r in orders],
         "",
         "━━━━━━━━━━━━━━",
         "⚠️ *ת.מ שטרם חויבו*",
@@ -149,11 +121,8 @@ def main():
     ]
 
     message = "\n".join(lines)
-
-    # Send
     result = send_whatsapp(message)
     print(f"✅ נשלח! uid: {result.get('data', {}).get('message_uid', '-')}")
-    print(f"\n{message}")
 
 
 if __name__ == "__main__":

@@ -22,11 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests psycopg2-binary
+        run: pip install requests
 
       - name: Run monthly sales report
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          TIMELINES_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
-          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
         run: python scripts/monthly_sales_report.py
