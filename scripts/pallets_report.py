@@ -198,21 +198,11 @@ def weekly_report(items, now):
         f"*{total_p} משטחים* | {total_d} שורות",
         "",
         "━━━━━━━━━━",
-        "*לפי נהג:*",
     ]
     for drv in ordered_drivers(drivers):
         total = int(sum(drivers[drv].values()))
-        lines.append(f"🚛 *{drv}* — {total} משטחים")
-
-    lines += ["", "━━━━━━━━━━", "*פירוט (Top 5 לכל נהג):*", ""]
-
-    for drv in ordered_drivers(drivers):
-        total = int(sum(drivers[drv].values()))
-        lines.append(f"🚛 *{drv}* — {total}")
-        top5 = sorted(drivers[drv].items(), key=lambda x: -x[1])[:5]
-        for cust, p in top5:
-            lines.append(f"• {shorten(cust)} — {int(p)}")
-        lines.append("")
+        if total > 0:
+            lines.append(f"🚛 *{drv}* — {total}")
 
     return "\n".join(lines).strip()
 
@@ -246,21 +236,11 @@ def monthly_report(items, now):
         f"*{total_p} משטחים* חולקו | {total_d} שורות",
         "",
         "━━━━━━━━━━",
-        "*לפי נהג:*",
     ]
     for drv in ordered_drivers(drivers):
         total = int(sum(drivers[drv].values()))
-        lines.append(f"🚛 *{drv}* — {total} משטחים")
-
-    lines += ["", "━━━━━━━━━━", "*לקוחות עיקריים לפי נהג:*", ""]
-
-    for drv in ordered_drivers(drivers):
-        total = int(sum(drivers[drv].values()))
-        lines.append(f"🚛 *{drv}* — {total}")
-        top5 = sorted(drivers[drv].items(), key=lambda x: -x[1])[:5]
-        for cust, p in top5:
-            lines.append(f"• {shorten(cust)} — {int(p)}")
-        lines.append("")
+        if total > 0:
+            lines.append(f"🚛 *{drv}* — {total}")
 
     return "\n".join(lines).strip()
 
