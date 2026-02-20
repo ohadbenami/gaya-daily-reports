@@ -1,0 +1,33 @@
+name: Monthly Sales Report
+
+on:
+  schedule:
+    # 09:00 Israel time (UTC+2) = 07:00 UTC
+    - cron: '0 7 * * *'
+    # 16:30 Israel time (UTC+2) = 14:30 UTC
+    - cron: '30 14 * * *'
+  workflow_dispatch:  # הפעלה ידנית מ-GitHub
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests psycopg2-binary
+
+      - name: Run monthly sales report
+        env:
+          SUPABASE_DB_HOST: db.uwfbirjpzzberwrhkson.supabase.co
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          TIMELINES_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+        run: python scripts/monthly_sales_report.py
