@@ -14,10 +14,12 @@ import psycopg2.extras
 from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SUPABASE_DB_HOST     = os.environ.get('SUPABASE_DB_HOST', 'db.uwfbirjpzzberwrhkson.supabase.co')
-SUPABASE_DB_PASSWORD = os.environ.get('SUPABASE_DB_PASSWORD')
-TIMELINES_TOKEN      = os.environ.get('TIMELINES_TOKEN', 'f40ecfc9-31e8-4905-a920-b27e5559fabc')
-WHATSAPP_PHONE       = os.environ.get('WHATSAPP_PHONE', '972528012869')
+SUPABASE_DB_URL  = os.environ.get('SUPABASE_DB_URL')   # Transaction pooler URL (full)
+TIMELINES_TOKEN  = os.environ.get('TIMELINES_TOKEN', 'f40ecfc9-31e8-4905-a920-b27e5559fabc')
+WHATSAPP_PHONE   = os.environ.get('WHATSAPP_PHONE', '972528012869')
+
+if not SUPABASE_DB_URL:
+    raise ValueError("Missing SUPABASE_DB_URL secret. Add it in GitHub Secrets.")
 
 # ── Queries ───────────────────────────────────────────────────────────────────
 SQL_SALES = """
@@ -83,13 +85,9 @@ def main():
     month_name = hebrew_month(now)
     year = now.year
 
-    # Connect to Supabase PostgreSQL
+    # Connect via Transaction Pooler (IPv4, works from GitHub Actions)
     conn = psycopg2.connect(
-        host=SUPABASE_DB_HOST,
-        port=5432,
-        dbname="postgres",
-        user="postgres",
-        password=SUPABASE_DB_PASSWORD,
+        SUPABASE_DB_URL,
         sslmode="require",
         options="-c client_encoding=UTF8"
     )

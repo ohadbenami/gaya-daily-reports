@@ -26,8 +26,7 @@ jobs:
 
       - name: Run monthly sales report
         env:
-          SUPABASE_DB_HOST: db.uwfbirjpzzberwrhkson.supabase.co
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           TIMELINES_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
         run: python scripts/monthly_sales_report.py
