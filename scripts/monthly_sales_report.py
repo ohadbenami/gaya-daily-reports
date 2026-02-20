@@ -39,7 +39,7 @@ ORDER BY sum DESC
 """
 
 SQL_UNINVOICED = """
-SELECT COUNT(DISTINCT m."תעודת משלוח") AS cnt, SUM(p."סה\u05bcכ מחיר") AS sum
+SELECT COUNT(DISTINCT m."תעודת משלוח") AS cnt, SUM(p."סה\u05f4כ מחיר") AS sum
 FROM "משלוחים" m
 JOIN "פירוט תעודות משלוח" p ON p."תעודת משלוח מקשרת" = m."תעודת משלוח"
 WHERE m."חויבה" = 'N'
