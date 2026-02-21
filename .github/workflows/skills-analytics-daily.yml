@@ -1,0 +1,32 @@
+name: Skills Analytics - Daily
+
+on:
+  schedule:
+    # 11:00 Israel time (UTC+2 winter) = 09:00 UTC
+    # ימים 0-5 = ראשון עד שישי (מדלג שבת אוטומטית)
+    - cron: '0 9 * * 0-5'
+  workflow_dispatch:  # הרצה ידנית מ-GitHub UI
+
+jobs:
+  send-analytics:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Skills Analytics
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TIMELINEAI_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+        run: python scripts/skills_analytics.py
