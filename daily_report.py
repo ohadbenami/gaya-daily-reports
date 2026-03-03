@@ -216,7 +216,7 @@ def upload_to_timelineai(filepath):
 
     with open(filepath, "rb") as f:
         files = {"file": (os.path.basename(filepath), f)}
-        response = requests.post(url, headers=headers, files=files, timeout=30)
+        response = requests.post(url, headers=headers, files=files, data={"phone": WHATSAPP_PHONE}, timeout=30)
 
     response.raise_for_status()
     data = response.json()
@@ -240,7 +240,7 @@ def send_whatsapp(file_uid, doc_count, total_price, total_pallets):
     payload = {
         "phone": WHATSAPP_PHONE,
         "text": text,
-        "file_uid": file_uid
+        "attachment": {"uid": file_uid}
     }
 
     response = requests.post(url, headers=headers, json=payload, timeout=30)

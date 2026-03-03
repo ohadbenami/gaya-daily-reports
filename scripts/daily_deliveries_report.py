@@ -603,7 +603,7 @@ def send_whatsapp_message(phone: str, text: str = None, file_uid: str = None) ->
     if text:
         payload["text"] = text
     if file_uid:
-        payload["file_uid"] = file_uid
+        payload["attachment"] = {"uid": file_uid}
 
     try:
         log(f"Sending WhatsApp to {phone}...")

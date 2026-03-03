@@ -966,7 +966,7 @@ def upload_file(filepath, retries=3):
     for attempt in range(retries):
         try:
             with open(filepath, 'rb') as f:
-                response = requests.post(url, headers=headers, files={'file': f}, timeout=30)
+                response = requests.post(url, headers=headers, files={'file': f}, data={'phone': RECIPIENTS[0]['phone']}, timeout=30)
             if response.status_code == 200:
                 return response.json().get('data', {}).get('uid')
             print(f"Upload error: {response.status_code}, retry {attempt + 1}/{retries}...")
@@ -986,7 +986,7 @@ def send_whatsapp(phone, file_uid, text, retries=2):
     for attempt in range(retries):
         try:
             response = requests.post(url, headers=headers,
-                                     json={"phone": phone, "file_uid": file_uid, "text": text},
+                                     json={"phone": phone, "attachment": {"uid": file_uid}, "text": text},
                                      timeout=30)
             if response.status_code == 200:
                 return True
