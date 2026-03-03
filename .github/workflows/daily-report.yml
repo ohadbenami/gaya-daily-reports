@@ -28,4 +28,6 @@ jobs:
           PRIORITY_API_PASS: ${{ secrets.PRIORITY_API_PASS }}
           TIMELINEAI_TOKEN: ${{ secrets.TIMELINEAI_TOKEN }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python daily_report.py

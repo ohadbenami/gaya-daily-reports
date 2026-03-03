@@ -18,6 +18,8 @@ PRIORITY_API_USER = os.environ["PRIORITY_API_USER"]
 PRIORITY_API_PASS = os.environ["PRIORITY_API_PASS"]
 TIMELINEAI_TOKEN = os.environ["TIMELINEAI_TOKEN"]
 WHATSAPP_PHONE = os.environ.get("WHATSAPP_PHONE", "972528012869")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 PRIORITY_BASE_URL = "https://p.priority-connect.online/odata/Priority/tabzfdbb.ini/a230521"
 
@@ -248,6 +250,43 @@ def send_whatsapp(file_uid, doc_count, total_price, total_pallets):
     return response.json()
 
 
+def send_telegram(filepath, caption):
+    """Send file via Telegram Bot API as backup delivery channel."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        print("Sending via Telegram...")
+        with open(filepath, "rb") as f:
+            response = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+                data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption},
+                files={"document": (os.path.basename(filepath), f)},
+                timeout=60,
+            )
+        response.raise_for_status()
+        print("  ✅ Telegram sent!")
+    except Exception as e:
+        print(f"  ⚠️ Telegram failed: {e}")
+
+
+def send_whatsapp_with_retry(filepath, file_caption, max_retries=3):
+    """Upload and send via WhatsApp with retry logic."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"  WhatsApp attempt {attempt}/{max_retries}...")
+            file_uid = upload_to_timelineai(filepath)
+            today_str = datetime.now().strftime("%d.%m.%Y")
+            result = send_whatsapp(file_uid, *file_caption)
+            print(f"  ✅ WhatsApp sent! UID: {result.get('data', {}).get('message_uid', 'N/A')}")
+            return True
+        except Exception as e:
+            print(f"  ❌ Attempt {attempt} failed: {e}")
+            if attempt < max_retries:
+                import time
+                time.sleep(5)
+    return False
+
+
 def main():
     print(f"[{datetime.now()}] Starting daily report...")
 
@@ -272,18 +311,22 @@ def main():
     filepath = create_excel(documents)
     print(f"  Saved: {filepath}")
 
-    # 4. Upload to TimelineAI
-    print("Uploading to TimelineAI...")
-    file_uid = upload_to_timelineai(filepath)
-    print(f"  File UID: {file_uid}")
+    today_str = datetime.now().strftime("%d.%m.%Y")
+    caption = f"תעודות משלוח פתוחות - {today_str}\n{len(documents)} תעודות | {total_pallets} משטחים | {total_price:,.0f} ₪"
 
-    # 5. Send via WhatsApp
+    # 4. Send via WhatsApp (with retry)
     print("Sending via WhatsApp...")
-    result = send_whatsapp(file_uid, len(documents), total_price, total_pallets)
-    print(f"  Sent! Message UID: {result.get('data', {}).get('message_uid', 'N/A')}")
+    whatsapp_ok = send_whatsapp_with_retry(filepath, (len(documents), total_price, total_pallets))
+
+    # 5. Send via Telegram (always — dual delivery)
+    send_telegram(filepath, caption)
 
     # Cleanup
     os.remove(filepath)
+
+    if not whatsapp_ok:
+        print("⚠️ WhatsApp failed after all retries, but Telegram backup was attempted.")
+
     print(f"[{datetime.now()}] Done!")
 
 
