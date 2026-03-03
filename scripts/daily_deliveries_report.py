@@ -599,9 +599,7 @@ def send_whatsapp_message(phone: str, text: str = None, file_uid: str = None) ->
         "Content-Type": "application/json"
     }
 
-    payload = {"phone": phone}
-    if text:
-        payload["text"] = text
+    payload = {"phone": phone, "text": text or ""}
     if file_uid:
         payload["attachment"] = {"uid": file_uid}
 
