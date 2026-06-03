@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Pallets Distribution Report - Gaya Foods
-Source: Monday.com board 5089475109 (הפצה)
+Source: Supabase table `הפצה` (snapshot of the old Monday distribution board).
+        Distribution data of record = Priority DOCUMENTS_D + Supabase `הפצה`.
 Modes: daily | weekly | monthly
 Usage: python pallets_report.py [daily|weekly|monthly]
 """
@@ -12,17 +13,28 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MONDAY_TOKEN   = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjU1MTE4OTg5MiwiYWFpIjoxMSwidWlkIjo3MDYwMzkyMSwiaWFkIjoiMjAyNS0wOC0xN1QxNjo0MDo0OC4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjczNTY5NjgsInJnbiI6ImV1YzEifQ.DX4YtZ2uq-E4WcTK0n0AN-CW7lzdEp075QesM-CdITE"
-BOARD_ID       = 5089475109
+# Supabase (data project that hosts the `הפצה` table).
+# Env vars take precedence (set in GitHub Actions); fall back to the data-project defaults.
+SUPABASE_URL    = os.environ.get("SUPABASE_URL", "https://uwfbirjpzzberwrhkson.supabase.co").rstrip("/")
+SUPABASE_KEY    = os.environ.get(
+    "SUPABASE_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3ZmJpcmpwenpiZXJ3cmhrc29uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwNzAzNTAsImV4cCI6MjA3NzY0NjM1MH0.ar3kfCjkVCqsyqx9zBsSbfn2AORxL9Ph7KLkQUjM6-I",
+)
+SUPABASE_TABLE  = "הפצה"
 TIMELINES_TOKEN = "f40ecfc9-31e8-4905-a920-b27e5559fabc"
 WHATSAPP_PHONE  = "972528012869"
-MONDAY_API      = "https://api.monday.com/v2"
 ISRAEL_TZ       = timezone(timedelta(hours=2))
 
-MONDAY_HEADERS = {
-    "Authorization": f"Bearer {MONDAY_TOKEN}",
+# Supabase `הפצה` column names (Hebrew, snapshot of old Monday board).
+COL_DATE     = "ת. הפצה"      # distribution date, format YYYY-MM-DD
+COL_DRIVER   = "נהג"          # driver
+COL_CUSTOMER = "שם לקוח"      # customer name
+COL_PALLETS  = "משטחים"       # pallets
+
+SUPABASE_HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "API-Version": "2024-01"
 }
 
 # סדר תצוגת נהגים
@@ -31,58 +43,54 @@ DRIVER_ORDER = ["שי", "אורי", "אורי נגלה 2", "שי נגלה 2", "B
 HEBREW_MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני",
                  "יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"]
 
-# ── Monday.com: שליפת כל הדפים ────────────────────────────────────────────────
-def fetch_all_items():
-    """שלוף את כל הפריטים מהלוח — עובר דפים עד cursor=null."""
-    all_items = []
+# ── Supabase: שליפת רשומות ההפצה ───────────────────────────────────────────────
+def fetch_items(date_from=None, date_to=None):
+    """שלוף רשומות הפצה מטבלת `הפצה` ב-Supabase, מסונן לפי טווח תאריכי הפצה.
 
-    # דף ראשון
-    query = """{
-      boards(ids: [%d]) {
-        items_page(limit: 500) {
-          cursor
-          items {
-            name
-            column_values(ids: ["date4", "color_mkz4z0q4", "numeric_mkz4s8sc"]) { id text }
-          }
-        }
-      }
-    }""" % BOARD_ID
-    resp = requests.post(MONDAY_API, headers=MONDAY_HEADERS, json={"query": query}, timeout=60)
-    resp.raise_for_status()
-    page = resp.json()["data"]["boards"][0]["items_page"]
-    all_items.extend(page["items"])
-    cursor = page.get("cursor")
+    date_from / date_to הם מחרוזות 'YYYY-MM-DD' (כולל). אם לא נמסרו — מושך הכל.
+    שמות עמודות עם רווח/נקודה מצוטטים ב-PostgREST (לדוגמה "ת. הפצה").
+    """
+    all_rows = []
+    offset = 0
+    page_size = 1000
+    col_date_q = f'"{COL_DATE}"'
 
-    # דפים נוספים
-    while cursor:
-        query = """{
-          next_items_page(limit: 500, cursor: "%s") {
-            cursor
-            items {
-              name
-              column_values(ids: ["date4", "color_mkz4z0q4", "numeric_mkz4s8sc"]) { id text }
-            }
-          }
-        }""" % cursor
-        resp = requests.post(MONDAY_API, headers=MONDAY_HEADERS, json={"query": query}, timeout=60)
+    while True:
+        params = {"select": "*", "limit": str(page_size), "offset": str(offset)}
+        if date_from:
+            params[col_date_q] = f"gte.{date_from}"
+        if date_to:
+            # PostgREST: שני תנאים על אותה עמודה דורשים תחביר and=()
+            if date_from:
+                params.pop(col_date_q, None)
+                params["and"] = f'({col_date_q}.gte.{date_from},{col_date_q}.lte.{date_to})'
+            else:
+                params[col_date_q] = f"lte.{date_to}"
+
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+            headers=SUPABASE_HEADERS,
+            params=params,
+            timeout=60,
+        )
         resp.raise_for_status()
-        page = resp.json()["data"]["next_items_page"]
-        all_items.extend(page["items"])
-        cursor = page.get("cursor")
+        batch = resp.json()
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
 
-    print(f"  → נשלפו {len(all_items)} פריטים מהלוח")
-    return all_items
+    print(f"  → נשלפו {len(all_rows)} רשומות הפצה מ-Supabase")
+    return all_rows
 
 
 # ── עיבוד נתונים ─────────────────────────────────────────────────────────────
 def parse_item(item):
-    cols = {cv["id"]: cv["text"] for cv in item["column_values"]}
     return {
-        "date":     cols.get("date4") or "",
-        "driver":   cols.get("color_mkz4z0q4") or "לא שויך",
-        "customer": item["name"],
-        "pallets":  float(cols.get("numeric_mkz4s8sc") or 0),
+        "date":     item.get(COL_DATE) or "",
+        "driver":   item.get(COL_DRIVER) or "לא שויך",
+        "customer": item.get(COL_CUSTOMER) or "",
+        "pallets":  float(item.get(COL_PALLETS) or 0),
     }
 
 
@@ -246,13 +254,31 @@ def monthly_report(items, now):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+def date_window(mode, now):
+    """החזר (date_from, date_to) לטעינה מ-Supabase לפי המוד (כולל מרווח ביטחון)."""
+    if mode == "daily":
+        # היום + אתמול (fallback) — מושכים יומיים אחרונים
+        return (now - timedelta(days=1)).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+    if mode == "weekly":
+        today = now.date()
+        monday = today - timedelta(days=today.weekday())
+        return monday.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+    if mode == "monthly":
+        first_this_month = now.date().replace(day=1)
+        last_month_end = first_this_month - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        return last_month_start.strftime("%Y-%m-%d"), last_month_end.strftime("%Y-%m-%d")
+    raise ValueError(f"Unknown mode: {mode}. Use daily/weekly/monthly")
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PALLETS_MODE", "daily")
     now  = datetime.now(ISRAEL_TZ)
     print(f"[pallets_report] mode={mode} | {now.strftime('%d.%m.%Y %H:%M')} Israel")
 
-    print("שולף נתונים מ-Monday.com...")
-    items = fetch_all_items()
+    print("שולף נתונים מ-Supabase (טבלת הפצה)...")
+    date_from, date_to = date_window(mode, now)
+    items = fetch_items(date_from, date_to)
 
     if mode == "daily":
         msg = daily_report(items, now)
